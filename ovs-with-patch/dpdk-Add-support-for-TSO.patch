@@ -1,0 +1,946 @@
+From patchwork Sat Jan 12 20:50:48 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023991
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cXJR56MJz9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 08:03:19 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id B636226D0;
+ Sat, 12 Jan 2019 21:02:54 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id B93262524
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:50:57 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga09.intel.com (mga09.intel.com [134.134.136.24])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 3397A806
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:50:57 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from fmsmga002.fm.intel.com ([10.253.24.26])
+ by orsmga102.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:50:57 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="134037709"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by fmsmga002.fm.intel.com with ESMTP; 12 Jan 2019 12:50:56 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:50:48 +0000
+Message-Id: <1547326250-207699-2-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547326250-207699-1-git-send-email-tiago.lam@intel.com>
+References: <1547326250-207699-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-6.9 required=5.0 tests=BAYES_00,RCVD_IN_DNSWL_HI
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v3 1/3] netdev-dpdk: Validate packets burst before
+ Tx.
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+Given that multi-segment mbufs might be sent between interfaces that
+support different capabilities, and may even support different layouts
+of mbufs, outgoing packets should be validated before sent on the egress
+interface. Thus, netdev_dpdk_eth_tx_burst() now calls DPDK's
+rte_eth_tx_prepare() function, if and only multi-segments is enbaled, in
+order to validate the following (taken from the DPDK documentation), on
+a device specific manner:
+- Check if packet meets devices requirements for tx offloads.
+- Check limitations about number of segments.
+- Check additional requirements when debug is enabled.
+- Update and/or reset required checksums when tx offload is set for
+packet.
+
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+---
+ lib/netdev-dpdk.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/lib/netdev-dpdk.c b/lib/netdev-dpdk.c
+index 4e96b37..942a1d2 100644
+--- a/lib/netdev-dpdk.c
++++ b/lib/netdev-dpdk.c
+@@ -2032,6 +2032,10 @@ netdev_dpdk_rxq_dealloc(struct netdev_rxq *rxq)
+ 
+ /* Tries to transmit 'pkts' to txq 'qid' of device 'dev'.  Takes ownership of
+  * 'pkts', even in case of failure.
++ * In case multi-segment mbufs / TSO is being used, it also prepares. In such
++ * cases, only the prepared packets will be sent to Tx burst, meaning that if
++ * an invalid packet appears in 'pkts'[3] only the validated packets in indices
++ * 0, 1 and 2 will be sent.
+  *
+  * Returns the number of packets that weren't transmitted. */
+ static inline int
+@@ -2039,11 +2043,24 @@ netdev_dpdk_eth_tx_burst(struct netdev_dpdk *dev, int qid,
+                          struct rte_mbuf **pkts, int cnt)
+ {
+     uint32_t nb_tx = 0;
++    uint16_t nb_prep = cnt;
++
++    /* If multi-segments is enabled, validate the burst of packets for Tx. */
++    if (OVS_UNLIKELY(dpdk_multi_segment_mbufs)) {
++        nb_prep = rte_eth_tx_prepare(dev->port_id, qid, pkts, cnt);
++        if (nb_prep != cnt) {
++            VLOG_WARN_RL(&rl, "%s: Preparing packet tx burst failed (%u/%u "
++                         "packets valid): %s", dev->up.name, nb_prep, cnt,
++                         rte_strerror(rte_errno));
++        }
++    }
+ 
+-    while (nb_tx != cnt) {
++    /* Tx the validated burst of packets only. */
++    while (nb_tx != nb_prep) {
+         uint32_t ret;
+ 
+-        ret = rte_eth_tx_burst(dev->port_id, qid, pkts + nb_tx, cnt - nb_tx);
++        ret = rte_eth_tx_burst(dev->port_id, qid, pkts + nb_tx,
++                               nb_prep - nb_tx);
+         if (!ret) {
+             break;
+         }
+
+From patchwork Sat Jan 12 20:50:49 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023992
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cXJp5rH3z9s4s
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 08:03:38 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id 99F6726D7;
+ Sat, 12 Jan 2019 21:02:55 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 34405252B
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:51:00 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga09.intel.com (mga09.intel.com [134.134.136.24])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 43F62710
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:50:59 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from fmsmga002.fm.intel.com ([10.253.24.26])
+ by orsmga102.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:50:59 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="134037713"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by fmsmga002.fm.intel.com with ESMTP; 12 Jan 2019 12:50:57 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:50:49 +0000
+Message-Id: <1547326250-207699-3-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547326250-207699-1-git-send-email-tiago.lam@intel.com>
+References: <1547326250-207699-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-6.9 required=5.0 tests=BAYES_00,RCVD_IN_DNSWL_HI
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v3 2/3] netdev-dpdk: Consider packets marked for TSO.
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+Previously, TSO was being explicity disabled on vhost interfaces,
+meaning the guests wouldn't have TSO support negotiated in. With TSO
+negotiated and enabled, packets are now marked for TSO, through the
+PKT_TX_TCP_SEG flag.
+
+In order to deal with this type of packets, a new function,
+netdev_dpdk_prep_tso_packet(), has been introduced, with the main
+purpose of setting correctly the l2, l3 and l4 length members of the
+mbuf struct, and the appropriate ol_flags. This function supports TSO
+both in IPv4 and IPv6.
+
+netdev_dpdk_prep_tso_packet() is then only called when packets are
+marked with the PKT_TX_TCP_SEG flag, meaning they have been marked for
+TSO, and when the packet will be traversing the NIC.
+
+Additionally, if a packet is marked for TSO but the egress netdev
+doesn't support it, the packet is dropped.
+
+Co-authored-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+
+Signed-off-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+---
+ lib/dp-packet.h    |  16 +++++++
+ lib/netdev-bsd.c   |  11 ++++-
+ lib/netdev-dpdk.c  | 122 ++++++++++++++++++++++++++++++++++++++++++-----------
+ lib/netdev-dummy.c |  11 ++++-
+ lib/netdev-linux.c |  15 +++++++
+ 5 files changed, 149 insertions(+), 26 deletions(-)
+
+diff --git a/lib/dp-packet.h b/lib/dp-packet.h
+index 1182b9c..8307c9d 100644
+--- a/lib/dp-packet.h
++++ b/lib/dp-packet.h
+@@ -104,6 +104,8 @@ static inline void dp_packet_set_size(struct dp_packet *, uint32_t);
+ static inline uint16_t dp_packet_get_allocated(const struct dp_packet *);
+ static inline void dp_packet_set_allocated(struct dp_packet *, uint16_t);
+ 
++static inline bool dp_packet_is_tso(struct dp_packet *b);
++
+ void *dp_packet_resize_l2(struct dp_packet *, int increment);
+ void *dp_packet_resize_l2_5(struct dp_packet *, int increment);
+ static inline void *dp_packet_eth(const struct dp_packet *);
+@@ -758,6 +760,14 @@ dp_packet_set_allocated(struct dp_packet *b, uint16_t s)
+     b->mbuf.buf_len = s;
+ }
+ 
++static inline bool
++dp_packet_is_tso(struct dp_packet *b)
++{
++    return (b->mbuf.ol_flags & (PKT_TX_TCP_SEG | PKT_TX_L4_MASK))
++           ? true
++           : false;
++}
++
+ static inline void
+ dp_packet_copy_mbuf_flags(struct dp_packet *dst, const struct dp_packet *src)
+ {
+@@ -977,6 +987,12 @@ dp_packet_get_allocated(const struct dp_packet *b)
+     return b->allocated_;
+ }
+ 
++static inline bool
++dp_packet_is_tso(struct dp_packet *b OVS_UNUSED)
++{
++    return false;
++}
++
+ static inline void
+ dp_packet_set_allocated(struct dp_packet *b, uint16_t s)
+ {
+diff --git a/lib/netdev-bsd.c b/lib/netdev-bsd.c
+index cc4a87e..21cc52e 100644
+--- a/lib/netdev-bsd.c
++++ b/lib/netdev-bsd.c
+@@ -700,11 +700,20 @@ netdev_bsd_send(struct netdev *netdev_, int qid OVS_UNUSED,
+     }
+ 
+     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
++        size_t size = dp_packet_size(packet);
++
++        /* TSO not supported in BSD netdev */
++        if (dp_packet_is_tso(packet)) {
++            VLOG_WARN_RL(&rl, "%s: No TSO support on port, TSO packet of size "
++                         "%" PRIuSIZE " dropped", name, size);
++
++            continue;
++        }
++
+         /* We need the whole data to send the packet on the device */
+         dp_packet_linearize(packet);
+ 
+         const void *data = dp_packet_data(packet);
+-        size_t size = dp_packet_size(packet);
+ 
+         while (!error) {
+             ssize_t retval;
+diff --git a/lib/netdev-dpdk.c b/lib/netdev-dpdk.c
+index 942a1d2..b30d791 100644
+--- a/lib/netdev-dpdk.c
++++ b/lib/netdev-dpdk.c
+@@ -1378,14 +1378,16 @@ netdev_dpdk_vhost_construct(struct netdev *netdev)
+         goto out;
+     }
+ 
+-    err = rte_vhost_driver_disable_features(dev->vhost_id,
+-                                1ULL << VIRTIO_NET_F_HOST_TSO4
+-                                | 1ULL << VIRTIO_NET_F_HOST_TSO6
+-                                | 1ULL << VIRTIO_NET_F_CSUM);
+-    if (err) {
+-        VLOG_ERR("rte_vhost_driver_disable_features failed for vhost user "
+-                 "port: %s\n", name);
+-        goto out;
++    if (!dpdk_multi_segment_mbufs) {
++        err = rte_vhost_driver_disable_features(dev->vhost_id,
++                                    1ULL << VIRTIO_NET_F_HOST_TSO4
++                                    | 1ULL << VIRTIO_NET_F_HOST_TSO6
++                                    | 1ULL << VIRTIO_NET_F_CSUM);
++        if (err) {
++            VLOG_ERR("rte_vhost_driver_disable_features failed for vhost user "
++                     "client port: %s\n", dev->up.name);
++            goto out;
++        }
+     }
+ 
+     err = rte_vhost_driver_start(dev->vhost_id);
+@@ -2030,6 +2032,44 @@ netdev_dpdk_rxq_dealloc(struct netdev_rxq *rxq)
+     rte_free(rx);
+ }
+ 
++/* Should only be called if PKT_TX_TCP_SEG is set in ol_flags.
++ * Furthermore, it also sets the PKT_TX_TCP_CKSUM and PKT_TX_IP_CKSUM flags,
++ * and PKT_TX_IPV4 and PKT_TX_IPV6 in case the packet is IPv4 or IPv6,
++ * respectively. */
++static void
++netdev_dpdk_prep_tso_packet(struct rte_mbuf *mbuf, int mtu)
++{
++    struct dp_packet *pkt;
++    struct tcp_header *th;
++
++    pkt = CONTAINER_OF(mbuf, struct dp_packet, mbuf);
++    mbuf->l2_len = (char *) dp_packet_l3(pkt) - (char *) dp_packet_eth(pkt);
++    mbuf->l3_len = (char *) dp_packet_l4(pkt) - (char *) dp_packet_l3(pkt);
++    th = dp_packet_l4(pkt);
++    /* There's no layer 4 in the packet. */
++    if (!th) {
++        return;
++    }
++    mbuf->l4_len = TCP_OFFSET(th->tcp_ctl) * 4;
++    mbuf->outer_l2_len = 0;
++    mbuf->outer_l3_len = 0;
++
++    /* Reset packet RX RSS flag to reuse in egress. */
++    dp_packet_mbuf_rss_flag_reset(pkt);
++
++    if (!(mbuf->ol_flags & PKT_TX_TCP_SEG)) {
++        return;
++    }
++
++    /* Prepare packet for egress. */
++    mbuf->ol_flags |= PKT_TX_TCP_SEG;
++    mbuf->ol_flags |= PKT_TX_TCP_CKSUM;
++    mbuf->ol_flags |= PKT_TX_IP_CKSUM;
++
++    /* Set the size of each TCP segment, based on the MTU of the device. */
++    mbuf->tso_segsz = mtu - mbuf->l3_len - mbuf->l4_len;
++}
++
+ /* Tries to transmit 'pkts' to txq 'qid' of device 'dev'.  Takes ownership of
+  * 'pkts', even in case of failure.
+  * In case multi-segment mbufs / TSO is being used, it also prepares. In such
+@@ -2331,13 +2371,29 @@ netdev_dpdk_filter_packet_len(struct netdev_dpdk *dev, struct rte_mbuf **pkts,
+     int cnt = 0;
+     struct rte_mbuf *pkt;
+ 
++    /* Filter oversized packets, unless are marked for TSO. */
+     for (i = 0; i < pkt_cnt; i++) {
+         pkt = pkts[i];
++
+         if (OVS_UNLIKELY(pkt->pkt_len > dev->max_packet_len)) {
+-            VLOG_WARN_RL(&rl, "%s: Too big size %" PRIu32 " max_packet_len %d",
+-                         dev->up.name, pkt->pkt_len, dev->max_packet_len);
+-            rte_pktmbuf_free(pkt);
+-            continue;
++            if (!(pkt->ol_flags & PKT_TX_TCP_SEG)) {
++                VLOG_WARN_RL(&rl, "%s: Too big size %" PRIu32 " "
++                             "max_packet_len %d",
++                             dev->up.name, pkt->pkt_len, dev->max_packet_len);
++                rte_pktmbuf_free(pkt);
++                continue;
++            } else {
++                /* 'If' the 'pkt' is intended for a VM, prepare it for sending,
++                 * 'else' the 'pkt' will not actually traverse the NIC, but
++                 * rather travel between VMs on the same host. */
++                if (dev->type != DPDK_DEV_VHOST) {
++                    netdev_dpdk_prep_tso_packet(pkt, dev->mtu);
++                }
++            }
++        } else {
++            if (dev->type != DPDK_DEV_VHOST) {
++                netdev_dpdk_prep_tso_packet(pkt, dev->mtu);
++            }
+         }
+ 
+         if (OVS_UNLIKELY(i != cnt)) {
+@@ -2428,6 +2484,7 @@ dpdk_copy_dp_packet_to_mbuf(struct dp_packet *packet, struct rte_mbuf **head,
+                             struct rte_mempool *mp)
+ {
+     struct rte_mbuf *mbuf, *fmbuf;
++    struct dp_packet *pkt = NULL;
+     uint16_t max_data_len;
+     uint32_t nb_segs = 0;
+     uint32_t size = 0;
+@@ -2468,6 +2525,12 @@ dpdk_copy_dp_packet_to_mbuf(struct dp_packet *packet, struct rte_mbuf **head,
+     fmbuf->nb_segs = nb_segs;
+     fmbuf->pkt_len = size;
+ 
++    pkt = CONTAINER_OF(fmbuf, struct dp_packet, mbuf);
++    pkt->l2_pad_size = packet->l2_pad_size;
++    pkt->l2_5_ofs = packet->l2_5_ofs;
++    pkt->l3_ofs = packet->l3_ofs;
++    pkt->l4_ofs = packet->l4_ofs;
++
+     dp_packet_mbuf_write(fmbuf, 0, size, dp_packet_data(packet));
+ 
+     return 0;
+@@ -2502,14 +2565,17 @@ dpdk_do_tx_copy(struct netdev *netdev, int qid, struct dp_packet_batch *batch)
+ 
+     for (i = 0; i < cnt; i++) {
+         struct dp_packet *packet = batch->packets[i];
++        struct rte_mbuf *pkt = &batch->packets[i]->mbuf;
+         uint32_t size = dp_packet_size(packet);
+         int err = 0;
+ 
+         if (OVS_UNLIKELY(size > dev->max_packet_len)) {
+-            VLOG_WARN_RL(&rl, "Too big size %u max_packet_len %d",
+-                         size, dev->max_packet_len);
+-            dropped++;
+-            continue;
++            if (!(pkt->ol_flags & PKT_TX_TCP_SEG)) {
++                VLOG_WARN_RL(&rl, "Too big size %u max_packet_len %d",
++                             size, dev->max_packet_len);
++                dropped++;
++                continue;
++            }
+         }
+ 
+         err = dpdk_copy_dp_packet_to_mbuf(packet, &pkts[txcnt],
+@@ -2525,6 +2591,12 @@ dpdk_do_tx_copy(struct netdev *netdev, int qid, struct dp_packet_batch *batch)
+         }
+         dp_packet_copy_mbuf_flags((struct dp_packet *)pkts[txcnt], packet);
+ 
++        if (dev->type != DPDK_DEV_VHOST) {
++            /* If packet is non-DPDK, at the very least, we need to update the
++             * mbuf length members, even if TSO is not to be performed. */
++            netdev_dpdk_prep_tso_packet(pkts[txcnt], dev->mtu);
++        }
++
+         txcnt++;
+     }
+ 
+@@ -4266,14 +4338,16 @@ netdev_dpdk_vhost_client_reconfigure(struct netdev *netdev)
+             goto unlock;
+         }
+ 
+-        err = rte_vhost_driver_disable_features(dev->vhost_id,
+-                                    1ULL << VIRTIO_NET_F_HOST_TSO4
+-                                    | 1ULL << VIRTIO_NET_F_HOST_TSO6
+-                                    | 1ULL << VIRTIO_NET_F_CSUM);
+-        if (err) {
+-            VLOG_ERR("rte_vhost_driver_disable_features failed for vhost user "
+-                     "client port: %s\n", dev->up.name);
+-            goto unlock;
++        if (!dpdk_multi_segment_mbufs) {
++            err = rte_vhost_driver_disable_features(dev->vhost_id,
++                                        1ULL << VIRTIO_NET_F_HOST_TSO4
++                                        | 1ULL << VIRTIO_NET_F_HOST_TSO6
++                                        | 1ULL << VIRTIO_NET_F_CSUM);
++            if (err) {
++                VLOG_ERR("rte_vhost_driver_disable_features failed for vhost "
++                         "user client port: %s\n", dev->up.name);
++                goto unlock;
++            }
+         }
+ 
+         err = rte_vhost_driver_start(dev->vhost_id);
+diff --git a/lib/netdev-dummy.c b/lib/netdev-dummy.c
+index f9c2c17..2991059 100644
+--- a/lib/netdev-dummy.c
++++ b/lib/netdev-dummy.c
+@@ -1090,11 +1090,20 @@ netdev_dummy_send(struct netdev *netdev, int qid OVS_UNUSED,
+ 
+     struct dp_packet *packet;
+     DP_PACKET_BATCH_FOR_EACH(i, packet, batch) {
++        size_t size = dp_packet_size(packet);
++
++        /* TSO not supported in Dummy netdev */
++        if (dp_packet_is_tso(packet)) {
++            VLOG_WARN("%s: No TSO support on port, TSO packet of size "
++                      "%" PRIuSIZE " dropped", netdev_get_name(netdev), size);
++
++            continue;
++        }
++
+         /* We need the whole data to send the packet on the device */
+         dp_packet_linearize(packet);
+ 
+         const void *buffer = dp_packet_data(packet);
+-        size_t size = dp_packet_size(packet);
+ 
+         if (packet->packet_type != htonl(PT_ETH)) {
+             error = EPFNOSUPPORT;
+diff --git a/lib/netdev-linux.c b/lib/netdev-linux.c
+index b8fe0ea..e6ab000 100644
+--- a/lib/netdev-linux.c
++++ b/lib/netdev-linux.c
+@@ -1379,6 +1379,13 @@ netdev_linux_sock_batch_send(int sock, int ifindex,
+ 
+     struct dp_packet *packet;
+     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
++        /* TSO not supported in Linux netdev */
++        if (dp_packet_is_tso(packet)) {
++            VLOG_WARN_RL(&rl, "%d: No TSO support on port, TSO packet of size "
++                         "%" PRIuSIZE " dropped", sock, size);
++            continue;
++        }
++
+         /* We need the whole data to send the packet on the device */
+         dp_packet_linearize(packet);
+ 
+@@ -1435,6 +1442,14 @@ netdev_linux_tap_batch_send(struct netdev *netdev_,
+         ssize_t retval;
+         int error;
+ 
++        /* TSO not supported in Linux netdev */
++        if (dp_packet_is_tso(packet)) {
++            VLOG_WARN_RL(&rl, "%s: No TSO support on port, TSO packet of size "
++                         "%" PRIuSIZE " dropped", netdev_get_name(netdev_),
++                         size);
++            continue;
++        }
++
+         /* We need the whole data to send the packet on the device */
+         dp_packet_linearize(packet);
+ 
+
+From patchwork Sat Jan 12 20:50:50 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023993
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cXKG3YJ4z9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 08:04:02 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id 717C826DB;
+ Sat, 12 Jan 2019 21:02:56 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 8F605252B
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:51:02 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga09.intel.com (mga09.intel.com [134.134.136.24])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 7E5FE710
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:51:01 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from fmsmga002.fm.intel.com ([10.253.24.26])
+ by orsmga102.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:51:01 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="134037723"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by fmsmga002.fm.intel.com with ESMTP; 12 Jan 2019 12:51:00 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:50:50 +0000
+Message-Id: <1547326250-207699-4-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547326250-207699-1-git-send-email-tiago.lam@intel.com>
+References: <1547326250-207699-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-6.9 required=5.0 tests=BAYES_00,RCVD_IN_DNSWL_HI
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v3 3/3] netdev-dpdk: Enable TSO when using
+ multi-seg mbufs
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+TCP Segmentation Offload (TSO) is a feature which enables the TCP/IP
+network stack to delegate segmentation of a TCP segment to the hardware
+NIC, thus saving compute resources. This may improve performance
+significantly for TCP workload in virtualized environments.
+
+While a previous commit already added the necesary logic to netdev-dpdk
+to deal with packets marked for TSO, this set of changes enables TSO by
+default when using multi-segment mbufs.
+
+Thus, to enable TSO on the physical DPDK interfaces, only the following
+command needs to be issued before starting OvS:
+    ovs-vsctl set Open_vSwitch . other_config:dpdk-multi-seg-mbufs=true
+
+Co-authored-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+
+Signed-off-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+---
+ Documentation/automake.mk           |  1 +
+ Documentation/topics/dpdk/index.rst |  1 +
+ Documentation/topics/dpdk/tso.rst   | 99 +++++++++++++++++++++++++++++++++++++
+ NEWS                                |  1 +
+ lib/netdev-dpdk.c                   | 70 ++++++++++++++++++++++++--
+ 5 files changed, 167 insertions(+), 5 deletions(-)
+ create mode 100644 Documentation/topics/dpdk/tso.rst
+
+diff --git a/Documentation/automake.mk b/Documentation/automake.mk
+index 082438e..a20deb8 100644
+--- a/Documentation/automake.mk
++++ b/Documentation/automake.mk
+@@ -39,6 +39,7 @@ DOC_SOURCE = \
+ 	Documentation/topics/dpdk/index.rst \
+ 	Documentation/topics/dpdk/bridge.rst \
+ 	Documentation/topics/dpdk/jumbo-frames.rst \
++	Documentation/topics/dpdk/tso.rst \
+ 	Documentation/topics/dpdk/memory.rst \
+ 	Documentation/topics/dpdk/pdump.rst \
+ 	Documentation/topics/dpdk/phy.rst \
+diff --git a/Documentation/topics/dpdk/index.rst b/Documentation/topics/dpdk/index.rst
+index cf24a7b..eb2a04d 100644
+--- a/Documentation/topics/dpdk/index.rst
++++ b/Documentation/topics/dpdk/index.rst
+@@ -40,4 +40,5 @@ The DPDK Datapath
+    /topics/dpdk/qos
+    /topics/dpdk/pdump
+    /topics/dpdk/jumbo-frames
++   /topics/dpdk/tso
+    /topics/dpdk/memory
+diff --git a/Documentation/topics/dpdk/tso.rst b/Documentation/topics/dpdk/tso.rst
+new file mode 100644
+index 0000000..14f8c39
+--- /dev/null
++++ b/Documentation/topics/dpdk/tso.rst
+@@ -0,0 +1,99 @@
++..
++      Copyright 2018, Red Hat, Inc.
++
++      Licensed under the Apache License, Version 2.0 (the "License"); you may
++      not use this file except in compliance with the License. You may obtain
++      a copy of the License at
++
++          http://www.apache.org/licenses/LICENSE-2.0
++
++      Unless required by applicable law or agreed to in writing, software
++      distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++      WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++      License for the specific language governing permissions and limitations
++      under the License.
++
++      Convention for heading levels in Open vSwitch documentation:
++
++      =======  Heading 0 (reserved for the title in a document)
++      -------  Heading 1
++      ~~~~~~~  Heading 2
++      +++++++  Heading 3
++      '''''''  Heading 4
++
++      Avoid deeper levels because they do not render well.
++
++===
++TSO
++===
++
++**Note:** This feature is considered experimental.
++
++TCP Segmentation Offload (TSO) is a mechanism which allows a TCP/IP stack to
++offload the TCP segmentation into hardware, thus saving the cycles that would
++be required to perform this same segmentation in software.
++
++TCP Segmentation Offload (TSO) enables a network stack to delegate segmentation
++of an oversized TCP segment to the underlying physical NIC. Offload of frame
++segmentation achieves computational savings in the core, freeing up CPU cycles
++for more useful work.
++
++A common use case for TSO is when using virtualization, where traffic that's
++coming in from a VM can offload the TCP segmentation, thus avoiding the
++fragmentation in software. Additionally, if the traffic is headed to a VM
++within the same host further optimization can be expected. As the traffic never
++leaves the machine, no MTU needs to be accounted for, and thus no segmentation
++and checksum calculations are required, which saves yet more cycles. Only when
++the traffic actually leaves the host the segmentation needs to happen, in which
++case it will be performed by the egress NIC.
++
++When using TSO with DPDK, the implementation relies on the multi-segment mbufs
++feature, described in :doc:`/topics/dpdk/jumbo-frames`, where each mbuf
++contains ~2KiB of the entire packet's data and is linked to the next mbuf that
++contains the next portion of data.
++
++Enabling TSO
++~~~~~~~~~~~~
++.. Important::
++
++    Once multi-segment mbufs is enabled, TSO will be enabled by default, if
++    there's support for it in the underlying physical NICs attached to
++    OvS-DPDK.
++
++When using :doc:`vHost User ports <vhost-user>`, TSO may be enabled in one of
++two ways, as follows.
++
++`TSO` is enabled in OvS by the DPDK vHost User backend; when a new guest
++connection is established, `TSO` is thus advertised to the guest as an
++available feature:
++
++1. QEMU Command Line Parameter::
++
++    $ sudo $QEMU_DIR/x86_64-softmmu/qemu-system-x86_64 \
++    ...
++    -device virtio-net-pci,mac=00:00:00:00:00:01,netdev=mynet1,\
++    csum=on,guest_csum=on,guest_tso4=on,guest_tso6=on\
++    ...
++
++2. Ethtool. Assuming that the guest's OS also supports `TSO`, ethtool can be used to enable same::
++
++    $ ethtool -K eth0 sg on     # scatter-gather is a prerequisite for TSO
++    $ ethtool -K eth0 tso on
++    $ ethtool -k eth0
++
++To enable TSO in a guest, the underlying NIC must first support `TSO` - consult
++your controller's datasheet for compatibility. Secondly, the NIC must have an
++associated DPDK Poll Mode Driver (PMD) which supports `TSO`.
++
++~~~~~~~~~~~
++Limitations
++~~~~~~~~~~~
++The current OvS `TSO` implementation supports flat and VLAN networks only (i.e.
++no support for `TSO` over tunneled connection [VxLAN, GRE, IPinIP, etc.]).
++
++Also, as TSO is built on top of multi-segments mbufs, the constraints pointed
++out in :doc:`/topics/dpdk/jumbo-frames` also apply for TSO. Thus, some
++performance hits might be noticed when running specific functionality, like
++the Userspace Connection tracker. And as mentioned in the same section, it is
++paramount that a packet's headers is contained within the first mbuf (~2KiB in
++size).
+diff --git a/NEWS b/NEWS
+index 98f5a9b..dc07b5a 100644
+--- a/NEWS
++++ b/NEWS
+@@ -23,6 +23,7 @@ Post-v2.10.0
+      * Add option for simple round-robin based Rxq to PMD assignment.
+        It can be set with pmd-rxq-assign.
+      * Add support for DPDK 18.11
++     * Add support for TSO (experimental, between DPDK interfaces only).
+    - Add 'symmetric_l3' hash function.
+    - OVS now honors 'updelay' and 'downdelay' for bonds with LACP configured.
+    - ovs-vswitchd:
+diff --git a/lib/netdev-dpdk.c b/lib/netdev-dpdk.c
+index b30d791..5a855fc 100644
+--- a/lib/netdev-dpdk.c
++++ b/lib/netdev-dpdk.c
+@@ -374,7 +374,8 @@ struct ingress_policer {
+ enum dpdk_hw_ol_features {
+     NETDEV_RX_CHECKSUM_OFFLOAD = 1 << 0,
+     NETDEV_RX_HW_CRC_STRIP = 1 << 1,
+-    NETDEV_RX_HW_SCATTER = 1 << 2
++    NETDEV_RX_HW_SCATTER = 1 << 2,
++    NETDEV_TX_TSO_OFFLOAD = 1 << 3,
+ };
+ 
+ /*
+@@ -1019,8 +1020,18 @@ dpdk_eth_dev_port_config(struct netdev_dpdk *dev, int n_rxq, int n_txq)
+             return -ENOTSUP;
+         }
+ 
++        if (dev->hw_ol_features & NETDEV_TX_TSO_OFFLOAD) {
++            conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_TSO;
++            conf.txmode.offloads |= DEV_TX_OFFLOAD_TCP_CKSUM;
++            conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
++        }
++
+         txconf = info.default_txconf;
+         txconf.offloads = conf.txmode.offloads;
++    } else if (dev->hw_ol_features & NETDEV_TX_TSO_OFFLOAD) {
++        dev->hw_ol_features &= ~NETDEV_TX_TSO_OFFLOAD;
++        VLOG_WARN("Failed to set Tx TSO offload in %s. Requires option "
++                  "`dpdk-multi-seg-mbufs` to be enabled.", dev->up.name);
+     }
+ 
+     conf.intr_conf.lsc = dev->lsc_interrupt_mode;
+@@ -1137,6 +1148,9 @@ dpdk_eth_dev_init(struct netdev_dpdk *dev)
+     uint32_t rx_chksm_offload_capa = DEV_RX_OFFLOAD_UDP_CKSUM |
+                                      DEV_RX_OFFLOAD_TCP_CKSUM |
+                                      DEV_RX_OFFLOAD_IPV4_CKSUM;
++    uint32_t tx_tso_offload_capa = DEV_TX_OFFLOAD_TCP_TSO |
++                                   DEV_TX_OFFLOAD_TCP_CKSUM |
++                                   DEV_TX_OFFLOAD_IPV4_CKSUM;
+ 
+     rte_eth_dev_info_get(dev->port_id, &info);
+ 
+@@ -1163,6 +1177,18 @@ dpdk_eth_dev_init(struct netdev_dpdk *dev)
+         dev->hw_ol_features &= ~NETDEV_RX_HW_SCATTER;
+     }
+ 
++    if (dpdk_multi_segment_mbufs) {
++        if (info.tx_offload_capa & tx_tso_offload_capa) {
++            dev->hw_ol_features |= NETDEV_TX_TSO_OFFLOAD;
++        } else {
++            dev->hw_ol_features &= ~NETDEV_TX_TSO_OFFLOAD;
++            VLOG_WARN("Tx TSO offload is not supported on port "
++                      DPDK_PORT_ID_FMT, dev->port_id);
++        }
++    } else {
++        dev->hw_ol_features &= ~NETDEV_TX_TSO_OFFLOAD;
++    }
++
+     n_rxq = MIN(info.max_rx_queues, dev->up.n_rxq);
+     n_txq = MIN(info.max_tx_queues, dev->up.n_txq);
+ 
+@@ -1687,6 +1713,11 @@ netdev_dpdk_get_config(const struct netdev *netdev, struct smap *args)
+         } else {
+             smap_add(args, "rx_csum_offload", "false");
+         }
++        if (dev->hw_ol_features & NETDEV_TX_TSO_OFFLOAD) {
++            smap_add(args, "tx_tso_offload", "true");
++        } else {
++            smap_add(args, "tx_tso_offload", "false");
++        }
+         smap_add(args, "lsc_interrupt_mode",
+                  dev->lsc_interrupt_mode ? "true" : "false");
+     }
+@@ -2363,9 +2394,21 @@ netdev_dpdk_qos_run(struct netdev_dpdk *dev, struct rte_mbuf **pkts,
+     return cnt;
+ }
+ 
++/* Filters a DPDK packet by the following criteria:
++ * - A packet is marked for TSO but the egress dev doesn't
++ *   support TSO;
++ * - A packet pkt_len is bigger than the pre-defined
++ *   max_packet_len, and the packet isn't marked for TSO.
++ *
++ * If any of the above case applies, the packet is then freed
++ * from 'pkts'. Otherwise the packet is kept in 'pkts'
++ * untouched.
++ *
++ * Returns the number of unfiltered packets left in 'pkts'.
++ */
+ static int
+-netdev_dpdk_filter_packet_len(struct netdev_dpdk *dev, struct rte_mbuf **pkts,
+-                              int pkt_cnt)
++netdev_dpdk_filter_packet(struct netdev_dpdk *dev, struct rte_mbuf **pkts,
++                          int pkt_cnt)
+ {
+     int i = 0;
+     int cnt = 0;
+@@ -2375,6 +2418,15 @@ netdev_dpdk_filter_packet_len(struct netdev_dpdk *dev, struct rte_mbuf **pkts,
+     for (i = 0; i < pkt_cnt; i++) {
+         pkt = pkts[i];
+ 
++        /* Drop TSO packet if there's no TSO support on egress port. */
++        if ((pkt->ol_flags & PKT_TX_TCP_SEG) &&
++            !(dev->hw_ol_features & NETDEV_TX_TSO_OFFLOAD)) {
++            VLOG_WARN_RL(&rl, "%s: TSO is disabled on port, TSO packet dropped"
++                        "%" PRIu32 " ", dev->up.name, pkt->pkt_len);
++            rte_pktmbuf_free(pkt);
++            continue;
++        }
++
+         if (OVS_UNLIKELY(pkt->pkt_len > dev->max_packet_len)) {
+             if (!(pkt->ol_flags & PKT_TX_TCP_SEG)) {
+                 VLOG_WARN_RL(&rl, "%s: Too big size %" PRIu32 " "
+@@ -2445,7 +2497,7 @@ __netdev_dpdk_vhost_send(struct netdev *netdev, int qid,
+ 
+     rte_spinlock_lock(&dev->tx_q[qid].tx_lock);
+ 
+-    cnt = netdev_dpdk_filter_packet_len(dev, cur_pkts, cnt);
++    cnt = netdev_dpdk_filter_packet(dev, cur_pkts, cnt);
+     /* Check has QoS has been configured for the netdev */
+     cnt = netdev_dpdk_qos_run(dev, cur_pkts, cnt, true);
+     dropped = total_pkts - cnt;
+@@ -2656,7 +2708,7 @@ netdev_dpdk_send__(struct netdev_dpdk *dev, int qid,
+         int batch_cnt = dp_packet_batch_size(batch);
+         struct rte_mbuf **pkts = (struct rte_mbuf **) batch->packets;
+ 
+-        tx_cnt = netdev_dpdk_filter_packet_len(dev, pkts, batch_cnt);
++        tx_cnt = netdev_dpdk_filter_packet(dev, pkts, batch_cnt);
+         tx_cnt = netdev_dpdk_qos_run(dev, pkts, tx_cnt, true);
+         dropped = batch_cnt - tx_cnt;
+ 
+@@ -4249,6 +4301,14 @@ dpdk_vhost_reconfigure_helper(struct netdev_dpdk *dev)
+         dev->tx_q[0].map = 0;
+     }
+ 
++    if (dpdk_multi_segment_mbufs) {
++        dev->hw_ol_features |= NETDEV_TX_TSO_OFFLOAD;
++
++        VLOG_DBG("%s: TSO enabled on vhost port", dev->up.name);
++    } else {
++        dev->hw_ol_features &= ~NETDEV_TX_TSO_OFFLOAD;
++    }
++
+     netdev_dpdk_remap_txqs(dev);
+ 
+     err = netdev_dpdk_mempool_configure(dev);
