@@ -1,4 +1,4 @@
-## OvS-DPDK with TSO
+## OvS-DPDK with TSO (TCP Segmentation Offload) feature
 This repository consists of the patched version of OvS to enable TSO (TCP Segmentation Offload) feature. Moreover, wiki of this repository provides a step by step guide for beginners to experiment Inter-VM Communication using OvS-DPDK.
 
 **Note (as per the status quo on 04/09/2019)**: As communicated in a [thread](https://mail.openvswitch.org/pipermail/ovs-discuss/2019-May/048671.html) at OvS mailing list, TSO is not supported currently in OvS-DPDK. TSO essentially requires the 
