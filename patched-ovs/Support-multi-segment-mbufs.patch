@@ -1,0 +1,4652 @@
+From patchwork Sat Jan 12 20:37:47 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023975
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX0C5f88z9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:49:15 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id 32E4D241F;
+ Sat, 12 Jan 2019 20:48:39 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 7046F23F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:07 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 00850710
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:06 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:06 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394868"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:04 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:47 +0000
+Message-Id: <1547325477-207468-2-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 01/11] netdev-dpdk: Serialise non-pmds mbufs'
+ alloc/free.
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+A new mutex, 'nonpmd_mp_mutex', has been introduced to serialise
+allocation and free operations by non-pmd threads on a given mempool.
+
+free_dpdk_buf() has been modified to make use of the introduced mutex.
+
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+Acked-by: Flavio Leitner <fbl@sysclose.org>
+---
+ lib/netdev-dpdk.c | 31 +++++++++++++++++++++++++++++--
+ 1 file changed, 29 insertions(+), 2 deletions(-)
+
+diff --git a/lib/netdev-dpdk.c b/lib/netdev-dpdk.c
+index 320422b..ea84c41 100644
+--- a/lib/netdev-dpdk.c
++++ b/lib/netdev-dpdk.c
+@@ -318,6 +318,16 @@ static struct ovs_mutex dpdk_mp_mutex OVS_ACQ_AFTER(dpdk_mutex)
+ static struct ovs_list dpdk_mp_list OVS_GUARDED_BY(dpdk_mp_mutex)
+     = OVS_LIST_INITIALIZER(&dpdk_mp_list);
+ 
++/* This mutex must be used by non pmd threads when allocating or freeing
++ * mbufs through mempools, when outside of the `non_pmd_mutex` mutex, in struct
++ * dp_netdev.
++ * The reason, as pointed out in the "Known Issues" section in DPDK's EAL docs,
++ * is that the implementation on which mempool is based off is non-preemptable.
++ * Since non-pmds may end up not being pinned this could lead to the preemption
++ * between non-pmds performing operations on the same mempool, which could lead
++ * to memory corruption. */
++static struct ovs_mutex nonpmd_mp_mutex = OVS_MUTEX_INITIALIZER;
++
+ struct dpdk_mp {
+      struct rte_mempool *mp;
+      int mtu;
+@@ -490,6 +500,8 @@ struct netdev_rxq_dpdk {
+     dpdk_port_t port_id;
+ };
+ 
++static bool dpdk_thread_is_pmd(void);
++
+ static void netdev_dpdk_destruct(struct netdev *netdev);
+ static void netdev_dpdk_vhost_destruct(struct netdev *netdev);
+ 
+@@ -523,6 +535,12 @@ dpdk_buf_size(int mtu)
+             + RTE_PKTMBUF_HEADROOM;
+ }
+ 
++static bool
++dpdk_thread_is_pmd(void)
++{
++     return rte_lcore_id() != NON_PMD_CORE_ID;
++}
++
+ /* Allocates an area of 'sz' bytes from DPDK.  The memory is zero'ed.
+  *
+  * Unlike xmalloc(), this function can return NULL on failure. */
+@@ -535,9 +553,18 @@ dpdk_rte_mzalloc(size_t sz)
+ void
+ free_dpdk_buf(struct dp_packet *p)
+ {
+-    struct rte_mbuf *pkt = (struct rte_mbuf *) p;
++    /* If non-pmd we need to lock on nonpmd_mp_mutex mutex */
++    if (!dpdk_thread_is_pmd()) {
++        ovs_mutex_lock(&nonpmd_mp_mutex);
++
++        rte_pktmbuf_free(&p->mbuf);
++
++        ovs_mutex_unlock(&nonpmd_mp_mutex);
++
++        return;
++    }
+ 
+-    rte_pktmbuf_free(pkt);
++    rte_pktmbuf_free(&p->mbuf);
+ }
+ 
+ static void
+
+From patchwork Sat Jan 12 20:37:48 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023976
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX0s6lG2z9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:49:49 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id 18E332421;
+ Sat, 12 Jan 2019 20:48:40 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 68AB523F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:11 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 8CC59710
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:10 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:10 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394873"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:07 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:48 +0000
+Message-Id: <1547325477-207468-3-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: Marcin Ksiadz <mksiadz@gmail.com>,
+ Przemyslaw Lal <przemyslawx.lal@intel.com>, fbl@sysclose.org,
+ Michael Qiu <qiudayu@chinac.com>, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 02/11] dp-packet: Fix data_len handling
+ multi-seg mbufs.
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+When a dp_packet is from a DPDK source, and it contains multi-segment
+mbufs, the data_len is not equal to the packet size, pkt_len. Instead,
+the data_len of each mbuf in the chain should be considered while
+distributing the new (provided) size.
+
+To account for the above dp_packet_set_size() has been changed so that,
+in the multi-segment mbufs case, only the data_len on the last mbuf of
+the chain and the total size of the packet, pkt_len, are changed. The
+data_len on the intermediate mbufs preceeding the last mbuf is not
+changed by dp_packet_set_size(). Furthermore, in some cases
+dp_packet_set_size() may be used to set a smaller size than the current
+packet size, thus effectively trimming the end of the packet. In the
+multi-segment mbufs case this may lead to lingering mbufs that may need
+freeing.
+
+__dp_packet_set_data() now also updates an mbufs' data_len after setting
+the data offset. This is so that both fields are always in sync for each
+mbuf in a chain.
+
+Co-authored-by: Michael Qiu <qiudayu@chinac.com>
+Co-authored-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+Co-authored-by: Przemyslaw Lal <przemyslawx.lal@intel.com>
+Co-authored-by: Marcin Ksiadz <mksiadz@gmail.com>
+Co-authored-by: Yuanhan Liu <yliu@fridaylinux.org>
+
+Signed-off-by: Michael Qiu <qiudayu@chinac.com>
+Signed-off-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+Signed-off-by: Przemyslaw Lal <przemyslawx.lal@intel.com>
+Signed-off-by: Marcin Ksiadz <mksiadz@gmail.com>
+Signed-off-by: Yuanhan Liu <yliu@fridaylinux.org>
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+---
+ lib/dp-packet.h | 101 +++++++++++++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 89 insertions(+), 12 deletions(-)
+
+diff --git a/lib/dp-packet.h b/lib/dp-packet.h
+index 7b85dd9..72a8043 100644
+--- a/lib/dp-packet.h
++++ b/lib/dp-packet.h
+@@ -426,20 +426,78 @@ dp_packet_size(const struct dp_packet *b)
+     return b->mbuf.pkt_len;
+ }
+ 
++/* Sets the size of the packet 'b' to 'v'. For non-DPDK packets this only means
++ * setting b->size_, but if used in a DPDK packet it means adjusting the first
++ * mbuf pkt_len and last mbuf data_len, to reflect the real size, which can
++ * lead to free'ing tail mbufs that are no longer used.
++ *
++ * This function should be used for setting the size only, and if there's an
++ * assumption that the tail end of 'b' will be trimmed. For adjusting the head
++ * 'end' of 'b', dp_packet_pull() should be used instead. */
+ static inline void
+ dp_packet_set_size(struct dp_packet *b, uint32_t v)
+ {
+-    /* netdev-dpdk does not currently support segmentation; consequently, for
+-     * all intents and purposes, 'data_len' (16 bit) and 'pkt_len' (32 bit) may
+-     * be used interchangably.
+-     *
+-     * On the datapath, it is expected that the size of packets
+-     * (and thus 'v') will always be <= UINT16_MAX; this means that there is no
+-     * loss of accuracy in assigning 'v' to 'data_len'.
+-     */
+-    b->mbuf.data_len = (uint16_t)v;  /* Current seg length. */
+-    b->mbuf.pkt_len = v;             /* Total length of all segments linked to
+-                                      * this segment. */
++    if (b->source == DPBUF_DPDK) {
++        struct rte_mbuf *mbuf = &b->mbuf;
++        uint16_t new_len = v;
++        uint16_t data_len;
++        uint16_t nb_segs = 0;
++        uint16_t pkt_len = 0;
++
++        /* Trim 'v' length bytes from the end of the chained buffers, freeing
++         * any buffers that may be left floating.
++         *
++         * For that traverse over the entire mbuf chain and, for each mbuf,
++         * subtract its 'data_len' from 'new_len' (initially set to 'v'), which
++         * essentially spreads 'new_len' between all existing mbufs in the
++         * chain. While traversing the mbuf chain, we end the traversal if:
++         * - 'new_size' reaches 0, meaning the passed 'v' has been
++         *   appropriately spread over the mbuf chain. The remaining mbufs are
++         *   freed;
++         * - We reach the last mbuf in the chain, in which case we set the last
++         *   mbuf's 'data_len' to the minimum value between the current
++         *   'new_len' (what's leftover from 'v') size and the maximum data the
++         *   mbuf can hold (mbuf->buf_len - mbuf->data_off).
++         *
++         * The above formula will thus make sure that when a 'v' is smaller
++         * than the overall 'pkt_len' (sum of all 'data_len'), it sets the new
++         * size and frees the leftover mbufs. In the other hand, if 'v' is
++         * bigger, it sets the size to the maximum available space, but no more
++         * than that. */
++        while (mbuf) {
++            data_len = MIN(new_len, mbuf->data_len);
++            mbuf->data_len = data_len;
++
++            if (new_len - data_len <= 0) {
++                /* Free the rest of chained mbufs */
++                free_dpdk_buf(CONTAINER_OF(mbuf->next, struct dp_packet,
++                                           mbuf));
++                mbuf->next = NULL;
++            } else if (!mbuf->next) {
++                /* Don't assign more than what we have available */
++                mbuf->data_len = MIN(new_len,
++                                     mbuf->buf_len - mbuf->data_off);
++            }
++
++            new_len -= data_len;
++            nb_segs += 1;
++            pkt_len += mbuf->data_len;
++            mbuf = mbuf->next;
++        }
++
++        /* pkt_len != v would effectively mean that pkt_len < than 'v' (as
++         * being bigger is logically impossible). Being < than 'v' would mean
++         * the 'v' provided was bigger than the available room, which is the
++         * responsibility of the caller to make sure there is enough room */
++        ovs_assert(pkt_len == v);
++
++        b->mbuf.nb_segs = nb_segs;
++        b->mbuf.pkt_len = pkt_len;
++    } else {
++        b->mbuf.data_len = v;
++        /* Total length of all segments linked to this segment. */
++        b->mbuf.pkt_len = v;
++    }
+ }
+ 
+ static inline uint16_t
+@@ -451,7 +509,26 @@ __packet_data(const struct dp_packet *b)
+ static inline void
+ __packet_set_data(struct dp_packet *b, uint16_t v)
+ {
+-    b->mbuf.data_off = v;
++    if (b->source == DPBUF_DPDK) {
++        /* Moving data_off away from the first mbuf in the chain is not a
++         * possibility using DPBUF_DPDK dp_packets */
++        ovs_assert(v == UINT16_MAX || v <= b->mbuf.buf_len);
++
++        uint16_t prev_ofs = b->mbuf.data_off;
++        b->mbuf.data_off = v;
++        int16_t ofs_diff = prev_ofs - b->mbuf.data_off;
++
++        /* When dealing with DPDK mbufs, keep data_off and data_len in sync.
++         * Thus, update data_len if the length changes with the move of
++         * data_off. However, if data_len is 0, there's no data to move and
++         * data_len should remain 0. */
++
++        if (b->mbuf.data_len != 0) {
++            b->mbuf.data_len += ofs_diff;
++        }
++    } else {
++        b->mbuf.data_off = v;
++    }
+ }
+ 
+ static inline uint16_t
+
+From patchwork Sat Jan 12 20:37:49 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023977
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX1X4qyjz9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:50:24 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id E93A02426;
+ Sat, 12 Jan 2019 20:48:40 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 94A1023F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:14 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id AC890710
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:13 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:13 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394880"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:10 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:49 +0000
+Message-Id: <1547325477-207468-4-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 03/11] dp-packet: Handle multi-seg mbufs in
+ helper funcs.
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+Most helper functions in dp-packet assume that the data held by a
+dp_packet is contiguous, and perform operations such as pointer
+arithmetic under that assumption. However, with the introduction of
+multi-segment mbufs, where data is non-contiguous, such assumptions are
+no longer possible. Some examples of Such helper functions are
+dp_packet_tail(), dp_packet_tailroom(), dp_packet_end(),
+dp_packet_get_allocated() and dp_packet_at().
+
+Thus, instead of assuming contiguous data in dp_packet, they  now
+iterate over the (non-contiguous) data in mbufs to perform their
+calculations.
+
+Finally, dp_packet_use__() has also been modified to perform the
+initialisation of the packet (and setting the source) before continuing
+to set its size and data length, which now depends on the type of
+packet.
+
+Co-authored-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+
+Signed-off-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+Acked-by: Flavio Leitner <fbl@sysclose.org>
+---
+ lib/dp-packet.c |   4 +-
+ lib/dp-packet.h | 172 ++++++++++++++++++++++++++++++++++++++++++++++++--------
+ 2 files changed, 152 insertions(+), 24 deletions(-)
+
+diff --git a/lib/dp-packet.c b/lib/dp-packet.c
+index 93b0e9c..f54119d 100644
+--- a/lib/dp-packet.c
++++ b/lib/dp-packet.c
+@@ -41,11 +41,11 @@ static void
+ dp_packet_use__(struct dp_packet *b, void *base, size_t allocated,
+              enum dp_packet_source source)
+ {
++    dp_packet_init__(b, allocated, source);
++
+     dp_packet_set_base(b, base);
+     dp_packet_set_data(b, base);
+     dp_packet_set_size(b, 0);
+-
+-    dp_packet_init__(b, allocated, source);
+ }
+ 
+ /* Initializes 'b' as an empty dp_packet that contains the 'allocated' bytes of
+diff --git a/lib/dp-packet.h b/lib/dp-packet.h
+index 72a8043..814fc47 100644
+--- a/lib/dp-packet.h
++++ b/lib/dp-packet.h
+@@ -133,6 +133,10 @@ static inline void *dp_packet_at(const struct dp_packet *, size_t offset,
+                                  size_t size);
+ static inline void *dp_packet_at_assert(const struct dp_packet *,
+                                         size_t offset, size_t size);
++#ifdef DPDK_NETDEV
++static inline const struct rte_mbuf *
++dp_packet_mbuf_from_offset(const struct dp_packet *b, size_t *offset);
++#endif
+ static inline void *dp_packet_tail(const struct dp_packet *);
+ static inline void *dp_packet_end(const struct dp_packet *);
+ 
+@@ -181,13 +185,28 @@ dp_packet_delete(struct dp_packet *b)
+ }
+ 
+ /* If 'b' contains at least 'offset + size' bytes of data, returns a pointer to
+- * byte 'offset'.  Otherwise, returns a null pointer. */
++ * byte 'offset'.  Otherwise, returns a null pointer. For DPDK packets, this
++ * means the 'offset' + 'size' must fall within the same mbuf (not necessarily
++ * the first mbuf), otherwise null is returned */
+ static inline void *
+ dp_packet_at(const struct dp_packet *b, size_t offset, size_t size)
+ {
+-    return offset + size <= dp_packet_size(b)
+-           ? (char *) dp_packet_data(b) + offset
+-           : NULL;
++    if (offset + size > dp_packet_size(b)) {
++        return NULL;
++    }
++
++#ifdef DPDK_NETDEV
++    if (b->source == DPBUF_DPDK) {
++        const struct rte_mbuf *mbuf = dp_packet_mbuf_from_offset(b, &offset);
++
++        if (!mbuf || offset + size > mbuf->data_len) {
++            return NULL;
++        }
++
++        return rte_pktmbuf_mtod_offset(mbuf, char *, offset);
++    }
++#endif
++    return (char *) dp_packet_data(b) + offset;
+ }
+ 
+ /* Returns a pointer to byte 'offset' in 'b', which must contain at least
+@@ -196,13 +215,23 @@ static inline void *
+ dp_packet_at_assert(const struct dp_packet *b, size_t offset, size_t size)
+ {
+     ovs_assert(offset + size <= dp_packet_size(b));
+-    return ((char *) dp_packet_data(b)) + offset;
++    return dp_packet_at(b, offset, size);
+ }
+ 
+ /* Returns a pointer to byte following the last byte of data in use in 'b'. */
+ static inline void *
+ dp_packet_tail(const struct dp_packet *b)
+ {
++#ifdef DPDK_NETDEV
++    if (b->source == DPBUF_DPDK) {
++        struct rte_mbuf *buf = CONST_CAST(struct rte_mbuf *, &b->mbuf);
++        /* Find last segment where data ends, meaning the tail of the chained
++         *  mbufs must be there */
++        buf = rte_pktmbuf_lastseg(buf);
++
++        return rte_pktmbuf_mtod_offset(buf, void *, buf->data_len);
++    }
++#endif
+     return (char *) dp_packet_data(b) + dp_packet_size(b);
+ }
+ 
+@@ -211,6 +240,15 @@ dp_packet_tail(const struct dp_packet *b)
+ static inline void *
+ dp_packet_end(const struct dp_packet *b)
+ {
++#ifdef DPDK_NETDEV
++    if (b->source == DPBUF_DPDK) {
++        struct rte_mbuf *buf = CONST_CAST(struct rte_mbuf *, &(b->mbuf));
++
++        buf = rte_pktmbuf_lastseg(buf);
++
++        return (char *) buf->buf_addr + buf->buf_len;
++    }
++#endif
+     return (char *) dp_packet_base(b) + dp_packet_get_allocated(b);
+ }
+ 
+@@ -236,6 +274,15 @@ dp_packet_tailroom(const struct dp_packet *b)
+ static inline void
+ dp_packet_clear(struct dp_packet *b)
+ {
++#ifdef DPDK_NETDEV
++    if (b->source == DPBUF_DPDK) {
++        /* sets pkt_len and data_len to zero and frees unused mbufs */
++        dp_packet_set_size(b, 0);
++        rte_pktmbuf_reset(&b->mbuf);
++
++        return;
++    }
++#endif
+     dp_packet_set_data(b, dp_packet_base(b));
+     dp_packet_set_size(b, 0);
+ }
+@@ -248,28 +295,51 @@ dp_packet_pull(struct dp_packet *b, size_t size)
+     void *data = dp_packet_data(b);
+     ovs_assert(dp_packet_size(b) - dp_packet_l2_pad_size(b) >= size);
+     dp_packet_set_data(b, (char *) dp_packet_data(b) + size);
+-    dp_packet_set_size(b, dp_packet_size(b) - size);
++#ifdef DPDK_NETDEV
++    b->mbuf.pkt_len -= size;
++#else
++    b->size_ -= size;
++#endif
++
+     return data;
+ }
+ 
++/* Similar to dp_packet_try_pull() but doesn't actually pull any data, only
++ * checks if it could and returns 'true' or 'false', accordingly. For DPDK
++ * packets, 'true' is only returned in case the 'offset' + 'size' falls within
++ * the first mbuf, otherwise 'false' is returned */
++static inline bool
++dp_packet_may_pull(const struct dp_packet *b, uint16_t offset, size_t size)
++{
++    if (offset == UINT16_MAX) {
++        return false;
++    }
++#ifdef DPDK_NETDEV
++    /* Offset needs to be within the first mbuf */
++    if (offset + size > b->mbuf.data_len) {
++        return false;
++    }
++#endif
++    return (offset + size > dp_packet_size(b)) ? false : true;
++}
++
+ /* If 'b' has at least 'size' bytes of data, removes that many bytes from the
+  * head end of 'b' and returns the first byte removed.  Otherwise, returns a
+  * null pointer without modifying 'b'. */
+ static inline void *
+ dp_packet_try_pull(struct dp_packet *b, size_t size)
+ {
++#ifdef DPDK_NETDEV
++    if (!dp_packet_may_pull(b, 0, size)) {
++        return NULL;
++    }
++#endif
++
+     return dp_packet_size(b) - dp_packet_l2_pad_size(b) >= size
+         ? dp_packet_pull(b, size) : NULL;
+ }
+ 
+ static inline bool
+-dp_packet_equal(const struct dp_packet *a, const struct dp_packet *b)
+-{
+-    return dp_packet_size(a) == dp_packet_size(b) &&
+-           !memcmp(dp_packet_data(a), dp_packet_data(b), dp_packet_size(a));
+-}
+-
+-static inline bool
+ dp_packet_is_eth(const struct dp_packet *b)
+ {
+     return b->packet_type == htonl(PT_ETH);
+@@ -355,10 +425,13 @@ dp_packet_set_l4(struct dp_packet *b, void *l4)
+ static inline size_t
+ dp_packet_l4_size(const struct dp_packet *b)
+ {
+-    return b->l4_ofs != UINT16_MAX
+-        ? (const char *)dp_packet_tail(b) - (const char *)dp_packet_l4(b)
+-        - dp_packet_l2_pad_size(b)
+-        : 0;
++    if (!dp_packet_may_pull(b, b->l4_ofs, 0)) {
++        return 0;
++    }
++
++    size_t l4_size = dp_packet_size(b) - b->l4_ofs;
++
++    return l4_size - dp_packet_l2_pad_size(b);
+ }
+ 
+ static inline const void *
+@@ -371,7 +444,8 @@ dp_packet_get_tcp_payload(const struct dp_packet *b)
+         int tcp_len = TCP_OFFSET(tcp->tcp_ctl) * 4;
+ 
+         if (OVS_LIKELY(tcp_len >= TCP_HEADER_LEN && tcp_len <= l4_size)) {
+-            return (const char *)tcp + tcp_len;
++            tcp = dp_packet_at(b, b->l4_ofs, tcp_len);
++            return (tcp == NULL) ? NULL : tcp + tcp_len;
+         }
+     }
+     return NULL;
+@@ -408,6 +482,54 @@ dp_packet_get_nd_payload(const struct dp_packet *b)
+ #ifdef DPDK_NETDEV
+ BUILD_ASSERT_DECL(offsetof(struct dp_packet, mbuf) == 0);
+ 
++static inline const struct rte_mbuf *
++dp_packet_mbuf_from_offset(const struct dp_packet *b, size_t *offset) {
++    const struct rte_mbuf *mbuf = &b->mbuf;
++    while (mbuf && *offset >= mbuf->data_len) {
++        *offset -= mbuf->data_len;
++
++        mbuf = mbuf->next;
++    }
++
++    return mbuf;
++}
++
++static inline bool
++dp_packet_equal(const struct dp_packet *a, const struct dp_packet *b)
++{
++    if (dp_packet_size(a) != dp_packet_size(b)) {
++        return false;
++    }
++
++    const struct rte_mbuf *m_a = NULL;
++    const struct rte_mbuf *m_b = NULL;
++    size_t abs_off_a = 0;
++    size_t abs_off_b = 0;
++    size_t len = 0;
++    while (m_a != NULL && m_b != NULL) {
++        size_t rel_off_a = abs_off_a;
++        size_t rel_off_b = abs_off_b;
++        m_a = dp_packet_mbuf_from_offset(a, &rel_off_a);
++        m_b = dp_packet_mbuf_from_offset(b, &rel_off_b);
++        if (!m_a || !m_b) {
++            break;
++        }
++
++        len = MIN(m_a->data_len - rel_off_a, m_b->data_len - rel_off_b);
++
++        if (memcmp(rte_pktmbuf_mtod_offset(m_a, char *, rel_off_a),
++                   rte_pktmbuf_mtod_offset(m_b, char *, rel_off_b),
++                   len)) {
++            return false;
++        }
++
++        abs_off_a += len;
++        abs_off_b += len;
++    }
++
++    return (!m_a && !m_b) ? true : false;
++}
++
+ static inline void *
+ dp_packet_base(const struct dp_packet *b)
+ {
+@@ -534,7 +656,7 @@ __packet_set_data(struct dp_packet *b, uint16_t v)
+ static inline uint16_t
+ dp_packet_get_allocated(const struct dp_packet *b)
+ {
+-    return b->mbuf.buf_len;
++    return b->mbuf.nb_segs * b->mbuf.buf_len;
+ }
+ 
+ static inline void
+@@ -632,6 +754,13 @@ dp_packet_has_flow_mark(struct dp_packet *p, uint32_t *mark)
+ }
+ 
+ #else /* DPDK_NETDEV */
++static inline bool
++dp_packet_equal(const struct dp_packet *a, const struct dp_packet *b)
++{
++    return dp_packet_size(a) == dp_packet_size(b) &&
++           !memcmp(dp_packet_data(a), dp_packet_data(b), dp_packet_size(a));
++}
++
+ static inline void *
+ dp_packet_base(const struct dp_packet *b)
+ {
+@@ -806,10 +935,9 @@ dp_packet_set_data(struct dp_packet *b, void *data)
+ }
+ 
+ static inline void
+-dp_packet_reset_packet(struct dp_packet *b, int off)
++dp_packet_reset_packet(struct dp_packet *b, size_t off)
+ {
+-    dp_packet_set_size(b, dp_packet_size(b) - off);
+-    dp_packet_set_data(b, ((unsigned char *) dp_packet_data(b) + off));
++    dp_packet_try_pull(b, off);
+     dp_packet_reset_offsets(b);
+ }
+ 
+
+From patchwork Sat Jan 12 20:37:50 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023978
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX244r7nz9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:50:52 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id C8C66240D;
+ Sat, 12 Jan 2019 20:48:41 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id F399023F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:16 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 67102806
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:16 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:16 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394884"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:13 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:50 +0000
+Message-Id: <1547325477-207468-5-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 04/11] dp-packet: Handle multi-seg mubfs in
+ shift() func.
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+In its current implementation dp_packet_shift() is also unaware of
+multi-seg mbufs (that holds data in memory non-contiguously) and assumes
+that data exists contiguously in memory, memmove'ing data to perform the
+shift.
+
+To add support for multi-seg mbufs a new set of functions was
+introduced, dp_packet_mbuf_shift() and dp_packet_mbuf_write(). These
+functions are used by dp_packet_shift(), when handling multi-seg mbufs,
+to shift and write data within a chain of mbufs.
+
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+---
+ lib/dp-packet.c | 105 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ lib/dp-packet.h |   3 ++
+ 2 files changed, 108 insertions(+)
+
+diff --git a/lib/dp-packet.c b/lib/dp-packet.c
+index f54119d..9ea3f78 100644
+--- a/lib/dp-packet.c
++++ b/lib/dp-packet.c
+@@ -23,6 +23,11 @@
+ #include "openvswitch/dynamic-string.h"
+ #include "util.h"
+ 
++#ifdef DPDK_NETDEV
++#define MBUF_BUF_END(BUF_ADDR, BUF_LEN) \
++    (char *) (((char *) BUF_ADDR) + BUF_LEN)
++#endif
++
+ static void
+ dp_packet_init__(struct dp_packet *b, size_t allocated, enum dp_packet_source source)
+ {
+@@ -290,6 +295,100 @@ dp_packet_prealloc_headroom(struct dp_packet *b, size_t size)
+     }
+ }
+ 
++#ifdef DPDK_NETDEV
++/* Write len data bytes in a mbuf at specified offset.
++ *
++ * 'mbuf', pointer to the destination mbuf where 'ofs' is, and the mbuf where
++ * the data will first be written.
++ * 'ofs', the offset within the provided 'mbuf' where 'data' is to be written.
++ * 'len', the size of the to be written 'data'.
++ * 'data', pointer to the to be written bytes.
++ *
++ * Note: This function is the counterpart of the `rte_pktmbuf_read()` function
++ * available with DPDK, in the rte_mbuf.h */
++void
++dp_packet_mbuf_write(struct rte_mbuf *mbuf, int16_t ofs, uint32_t len,
++                     const void *data)
++{
++    char *dst_addr;
++    uint16_t data_len;
++    int len_copy;
++    while (mbuf) {
++        if (len == 0) {
++            break;
++        }
++
++        dst_addr = rte_pktmbuf_mtod_offset(mbuf, char *, ofs);
++        data_len = MBUF_BUF_END(mbuf->buf_addr, mbuf->buf_len) - dst_addr;
++
++        len_copy = MIN(len, data_len);
++        /* We don't know if 'data' is the result of a rte_pktmbuf_read() call,
++         * in which case we may end up writing to the same region of memory we
++         * are reading from and overlapping. Hence the use of memmove() here */
++        memmove(dst_addr, data, len_copy);
++
++        data = ((char *) data) + len_copy;
++        len -= len_copy;
++        ofs = 0;
++
++        mbuf->data_len = len_copy;
++        mbuf = mbuf->next;
++    }
++}
++
++static void
++dp_packet_mbuf_shift_(struct rte_mbuf *dbuf, int16_t dst_ofs,
++                      const struct rte_mbuf *sbuf, uint16_t src_ofs, int len)
++{
++    char *rd = xmalloc(sizeof(*rd) * len);
++    const char *wd = rte_pktmbuf_read(sbuf, src_ofs, len, rd);
++
++    ovs_assert(wd);
++
++    dp_packet_mbuf_write(dbuf, dst_ofs, len, wd);
++
++    free(rd);
++}
++
++/* Similarly to dp_packet_shift(), shifts the data within the mbufs of a
++ * dp_packet of DPBUF_DPDK source by 'delta' bytes.
++ * Caller must make sure of the following conditions:
++ * - When shifting left, delta can't be bigger than the data_len available in
++ *   the last mbuf;
++ * - When shifting right, delta can't be bigger than the space available in the
++ *   first mbuf (buf_len - data_off).
++ * Both these conditions guarantee that a shift operation doesn't fall outside
++ * the bounds of the existing mbufs, so that the first and last mbufs (when
++ * using multi-segment mbufs), remain the same. */
++static void
++dp_packet_mbuf_shift(struct dp_packet *b, int delta)
++{
++    uint16_t src_ofs;
++    int16_t dst_ofs;
++
++    struct rte_mbuf *mbuf = CONST_CAST(struct rte_mbuf *, &b->mbuf);
++    struct rte_mbuf *tmbuf = rte_pktmbuf_lastseg(mbuf);
++
++    if (delta < 0) {
++        ovs_assert(-delta <= tmbuf->data_len);
++    } else {
++        ovs_assert(delta < (mbuf->buf_len - mbuf->data_off));
++    }
++
++    /* Set the destination and source offsets to copy to */
++    dst_ofs = delta;
++    src_ofs = 0;
++
++    /* Shift data from src mbuf and offset to dst mbuf and offset */
++    dp_packet_mbuf_shift_(mbuf, dst_ofs, mbuf, src_ofs,
++                          rte_pktmbuf_pkt_len(mbuf));
++
++    /* Update mbufs' properties, and if using multi-segment mbufs, first and
++     * last mbuf's data_len also needs to be adjusted */
++    mbuf->data_off = mbuf->data_off + dst_ofs;
++}
++#endif
++
+ /* Shifts all of the data within the allocated space in 'b' by 'delta' bytes.
+  * For example, a 'delta' of 1 would cause each byte of data to move one byte
+  * forward (from address 'p' to 'p+1'), and a 'delta' of -1 would cause each
+@@ -302,6 +401,12 @@ dp_packet_shift(struct dp_packet *b, int delta)
+                : true);
+ 
+     if (delta != 0) {
++#ifdef DPDK_NETDEV
++        if (b->source == DPBUF_DPDK) {
++            dp_packet_mbuf_shift(b, delta);
++            return;
++        }
++#endif
+         char *dst = (char *) dp_packet_data(b) + delta;
+         memmove(dst, dp_packet_data(b), dp_packet_size(b));
+         dp_packet_set_data(b, dst);
+diff --git a/lib/dp-packet.h b/lib/dp-packet.h
+index 814fc47..19dc911 100644
+--- a/lib/dp-packet.h
++++ b/lib/dp-packet.h
+@@ -136,6 +136,9 @@ static inline void *dp_packet_at_assert(const struct dp_packet *,
+ #ifdef DPDK_NETDEV
+ static inline const struct rte_mbuf *
+ dp_packet_mbuf_from_offset(const struct dp_packet *b, size_t *offset);
++void
++dp_packet_mbuf_write(struct rte_mbuf *mbuf, int16_t ofs, uint32_t len,
++                     const void *data);
+ #endif
+ static inline void *dp_packet_tail(const struct dp_packet *);
+ static inline void *dp_packet_end(const struct dp_packet *);
+
+From patchwork Sat Jan 12 20:37:51 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023979
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX2b4ffHz9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:51:19 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id 96435242B;
+ Sat, 12 Jan 2019 20:48:42 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 4337C23F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:20 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 8B82E710
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:19 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:19 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394890"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:16 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:51 +0000
+Message-Id: <1547325477-207468-6-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, Michael Qiu <qiudayu@chinac.com>, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 05/11] dp-packet: copy data from multi-seg.
+ DPDK mbuf
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+From: Michael Qiu <qiudayu@chinac.com>
+
+When doing packet clone, if packet source is from DPDK driver,
+multi-segment must be considered, and copy the segment's data one by
+one.
+
+Also, lots of DPDK mbuf's info is missed during a copy, like packet
+type, ol_flags, etc.  That information is very important for DPDK to do
+packets processing.
+
+Co-authored-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+Co-authored-by: Tiago Lam <tiago.lam@intel.com>
+
+Signed-off-by: Michael Qiu <qiudayu@chinac.com>
+Signed-off-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+---
+ lib/dp-packet.c   | 62 ++++++++++++++++++++++++++++++++++++++-----------------
+ lib/dp-packet.h   | 29 ++++++++++++++++++++++++++
+ lib/netdev-dpdk.c |  1 +
+ 3 files changed, 73 insertions(+), 19 deletions(-)
+
+diff --git a/lib/dp-packet.c b/lib/dp-packet.c
+index 9ea3f78..4e4b8fb 100644
+--- a/lib/dp-packet.c
++++ b/lib/dp-packet.c
+@@ -159,39 +159,63 @@ dp_packet_clone(const struct dp_packet *buffer)
+     return dp_packet_clone_with_headroom(buffer, 0);
+ }
+ 
++#ifdef DPDK_NETDEV
++struct dp_packet *
++dp_packet_clone_with_headroom(const struct dp_packet *b, size_t headroom) {
++    struct dp_packet *new_buffer;
++    uint32_t pkt_len = dp_packet_size(b);
++
++    /* Copy multi-seg data. */
++    if (b->source == DPBUF_DPDK && !rte_pktmbuf_is_contiguous(&b->mbuf)) {
++        void *dst = NULL;
++        struct rte_mbuf *mbuf = CONST_CAST(struct rte_mbuf *, &b->mbuf);
++
++        new_buffer = dp_packet_new_with_headroom(pkt_len, headroom);
++        dst = dp_packet_data(new_buffer);
++        dp_packet_set_size(new_buffer, pkt_len);
++
++        if (!rte_pktmbuf_read(mbuf, 0, pkt_len, dst)) {
++            dp_packet_delete(new_buffer);
++            return NULL;
++        }
++    } else {
++        new_buffer = dp_packet_clone_data_with_headroom(dp_packet_data(b),
++                                                        dp_packet_size(b),
++                                                        headroom);
++    }
++
++    dp_packet_copy_common_members(new_buffer, b);
++
++    dp_packet_copy_mbuf_flags(new_buffer, b);
++    if (dp_packet_rss_valid(new_buffer)) {
++        new_buffer->mbuf.hash.rss = b->mbuf.hash.rss;
++    }
++
++    return new_buffer;
++}
++#else
+ /* Creates and returns a new dp_packet whose data are copied from 'buffer'.
+  * The returned dp_packet will additionally have 'headroom' bytes of
+  * headroom. */
+ struct dp_packet *
+-dp_packet_clone_with_headroom(const struct dp_packet *buffer, size_t headroom)
++dp_packet_clone_with_headroom(const struct dp_packet *b, size_t headroom)
+ {
+     struct dp_packet *new_buffer;
++    uint32_t pkt_len = dp_packet_size(b);
+ 
+-    new_buffer = dp_packet_clone_data_with_headroom(dp_packet_data(buffer),
+-                                                 dp_packet_size(buffer),
+-                                                 headroom);
+-    /* Copy the following fields into the returned buffer: l2_pad_size,
+-     * l2_5_ofs, l3_ofs, l4_ofs, cutlen, packet_type and md. */
+-    memcpy(&new_buffer->l2_pad_size, &buffer->l2_pad_size,
+-            sizeof(struct dp_packet) -
+-            offsetof(struct dp_packet, l2_pad_size));
++    new_buffer = dp_packet_clone_data_with_headroom(dp_packet_data(b),
++                                                    pkt_len, headroom);
+ 
+-#ifdef DPDK_NETDEV
+-    new_buffer->mbuf.ol_flags = buffer->mbuf.ol_flags;
+-#else
+-    new_buffer->rss_hash_valid = buffer->rss_hash_valid;
+-#endif
++    dp_packet_copy_common_members(new_buffer, b);
+ 
++    new_buffer->rss_hash_valid = b->rss_hash_valid;
+     if (dp_packet_rss_valid(new_buffer)) {
+-#ifdef DPDK_NETDEV
+-        new_buffer->mbuf.hash.rss = buffer->mbuf.hash.rss;
+-#else
+-        new_buffer->rss_hash = buffer->rss_hash;
+-#endif
++        new_buffer->rss_hash = b->rss_hash;
+     }
+ 
+     return new_buffer;
+ }
++#endif
+ 
+ /* Creates and returns a new dp_packet that initially contains a copy of the
+  * 'size' bytes of data starting at 'data' with no headroom or tailroom. */
+diff --git a/lib/dp-packet.h b/lib/dp-packet.h
+index 19dc911..2951fb8 100644
+--- a/lib/dp-packet.h
++++ b/lib/dp-packet.h
+@@ -129,6 +129,10 @@ struct dp_packet *dp_packet_clone_data_with_headroom(const void *, size_t,
+                                                      size_t headroom);
+ static inline void dp_packet_delete(struct dp_packet *);
+ 
++static inline void
++dp_packet_copy_common_members(struct dp_packet *new_b,
++                              const struct dp_packet *b);
++
+ static inline void *dp_packet_at(const struct dp_packet *, size_t offset,
+                                  size_t size);
+ static inline void *dp_packet_at_assert(const struct dp_packet *,
+@@ -139,6 +143,8 @@ dp_packet_mbuf_from_offset(const struct dp_packet *b, size_t *offset);
+ void
+ dp_packet_mbuf_write(struct rte_mbuf *mbuf, int16_t ofs, uint32_t len,
+                      const void *data);
++static inline void
++dp_packet_copy_mbuf_flags(struct dp_packet *dst, const struct dp_packet *src);
+ #endif
+ static inline void *dp_packet_tail(const struct dp_packet *);
+ static inline void *dp_packet_end(const struct dp_packet *);
+@@ -187,6 +193,17 @@ dp_packet_delete(struct dp_packet *b)
+     }
+ }
+ 
++/* Copies the following fields into the 'new_b', which represent the common
++ * fields between DPDK and non-DPDK packets: l2_pad_size, l2_5_ofs, l3_ofs,
++ * l4_ofs, cutlen, packet_type and md. */
++static inline void
++dp_packet_copy_common_members(struct dp_packet *new_b,
++                              const struct dp_packet *b) {
++    memcpy(&new_b->l2_pad_size, &b->l2_pad_size,
++           sizeof(struct dp_packet) -
++           offsetof(struct dp_packet, l2_pad_size));
++}
++
+ /* If 'b' contains at least 'offset + size' bytes of data, returns a pointer to
+  * byte 'offset'.  Otherwise, returns a null pointer. For DPDK packets, this
+  * means the 'offset' + 'size' must fall within the same mbuf (not necessarily
+@@ -668,6 +685,18 @@ dp_packet_set_allocated(struct dp_packet *b, uint16_t s)
+     b->mbuf.buf_len = s;
+ }
+ 
++static inline void
++dp_packet_copy_mbuf_flags(struct dp_packet *dst, const struct dp_packet *src)
++{
++    ovs_assert(dst != NULL && src != NULL);
++    struct rte_mbuf *buf_dst = &dst->mbuf;
++    const struct rte_mbuf *buf_src = &src->mbuf;
++
++    buf_dst->ol_flags = buf_src->ol_flags;
++    buf_dst->packet_type = buf_src->packet_type;
++    buf_dst->tx_offload = buf_src->tx_offload;
++}
++
+ /* Returns the RSS hash of the packet 'p'.  Note that the returned value is
+  * correct only if 'dp_packet_rss_valid(p)' returns true */
+ static inline uint32_t
+diff --git a/lib/netdev-dpdk.c b/lib/netdev-dpdk.c
+index ea84c41..a0df9fc 100644
+--- a/lib/netdev-dpdk.c
++++ b/lib/netdev-dpdk.c
+@@ -2381,6 +2381,7 @@ dpdk_do_tx_copy(struct netdev *netdev, int qid, struct dp_packet_batch *batch)
+         memcpy(rte_pktmbuf_mtod(pkts[txcnt], void *),
+                dp_packet_data(packet), size);
+         dp_packet_set_size((struct dp_packet *)pkts[txcnt], size);
++        dp_packet_copy_mbuf_flags((struct dp_packet *)pkts[txcnt], packet);
+ 
+         txcnt++;
+     }
+
+From patchwork Sat Jan 12 20:37:52 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023981
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX354Ns0z9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:51:45 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id 6BD862430;
+ Sat, 12 Jan 2019 20:48:43 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id DFB7F23F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:25 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 08566806
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:22 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:22 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394908"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:19 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:52 +0000
+Message-Id: <1547325477-207468-7-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 06/11] dp-packet: Add support for data
+ "linearization".
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+Previous commits have added support to the dp_packet API to handle
+multi-segmented packets, where data is not stored contiguously in
+memory. However, in some cases, it is inevitable and data must be
+provided contiguously. Examples of such cases are when performing csums
+over the entire packet data, or when write()'ing to a file descriptor
+(for a tap interface, for example). For such cases, the dp_packet API
+has been extended to provide a way to transform a multi-segmented
+DPBUF_DPDK packet into a DPBUF_MALLOC system packet (at the expense of a
+copy of memory). If the packet's data is already stored in memory
+contigously then there's no need to convert the packet.
+
+Thus, the main use cases that were assuming that a dp_packet's data is
+always held contiguously in memory were changed to make use of the new
+"linear functions" in the dp_packet API when there's a need to traverse
+the entire's packet data. Per the example above, when the packet's data
+needs to be write() to the tap's file descriptor, or when the conntrack
+module needs to verify a packet's checksum, the data is now linearized.
+
+Additionally, the miniflow_extract() function has been modified to check
+if the respective packet headers don't span across multiple mbufs. This
+requirement is needed to guarantee that callers can assume headers are
+always in contiguous memory.
+
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+---
+ lib/conntrack.c               |   5 ++
+ lib/crc32c.c                  |  17 +++-
+ lib/crc32c.h                  |   2 +
+ lib/dp-packet.c               |  18 +++++
+ lib/dp-packet.h               | 184 +++++++++++++++++++++++++++++++++++++++---
+ lib/dpif-netdev.c             |  18 ++++-
+ lib/dpif-netlink.c            |   3 +
+ lib/dpif.c                    |   6 ++
+ lib/flow.c                    | 113 ++++++++++++++++++++++----
+ lib/flow.h                    |   4 +-
+ lib/mcast-snooping.c          |   2 +
+ lib/netdev-bsd.c              |   3 +
+ lib/netdev-dummy.c            |   6 ++
+ lib/netdev-linux.c            |   6 ++
+ lib/netdev-native-tnl.c       |  26 +++---
+ lib/odp-execute.c             |  24 +++++-
+ lib/packets.c                 |  96 +++++++++++++++++++---
+ lib/packets.h                 |   7 ++
+ ofproto/ofproto-dpif-upcall.c |  21 +++--
+ ofproto/ofproto-dpif-xlate.c  |  27 ++++++-
+ tests/test-rstp.c             |   9 ++-
+ tests/test-stp.c              |   9 ++-
+ 22 files changed, 528 insertions(+), 78 deletions(-)
+
+diff --git a/lib/conntrack.c b/lib/conntrack.c
+index 6f6021a..f80b806 100644
+--- a/lib/conntrack.c
++++ b/lib/conntrack.c
+@@ -1318,6 +1318,11 @@ conntrack_execute(struct conntrack *ct, struct dp_packet_batch *pkt_batch,
+     struct conn_lookup_ctx ctx;
+ 
+     DP_PACKET_BATCH_FOR_EACH (i, packet, pkt_batch) {
++        /* Linearize the packet to ensure conntrack has the whole data */
++        if (!dp_packet_is_linear(packet)) {
++            dp_packet_linearize(packet);
++        }
++
+         if (!conn_key_extract(ct, packet, dl_type, &ctx, zone)) {
+             packet->md.ct_state = CS_INVALID;
+             write_ct_md(packet, zone, NULL, NULL, NULL);
+diff --git a/lib/crc32c.c b/lib/crc32c.c
+index e8dd6ee..83beec7 100644
+--- a/lib/crc32c.c
++++ b/lib/crc32c.c
+@@ -141,19 +141,30 @@ ovs_be32
+ crc32c(const uint8_t *data, size_t size)
+ {
+     uint32_t crc = 0xffffffffL;
++    return crc32c_finish(crc32c_continue(crc, data, size));
++}
+ 
++uint32_t
++crc32c_continue(uint32_t partial, const uint8_t *data, size_t size)
++{
+     while (size--) {
+-        crc = crc32Table[(crc ^ *data++) & 0xff] ^ (crc >> 8);
++        partial = crc32Table[(partial ^ *data++) & 0xff] ^ (partial >> 8);
+     }
+ 
++    return partial;
++}
++
++ovs_be32
++crc32c_finish(uint32_t partial)
++{
+     /* The result of this CRC calculation provides us a value in the reverse
+      * byte-order as compared with our architecture. On big-endian systems,
+      * this is opposite to our return type. So, to return a big-endian
+      * value, we must swap the byte-order. */
+ #if defined(WORDS_BIGENDIAN)
+-    crc = uint32_byteswap(crc);
++    crc = uint32_byteswap(partial);
+ #endif
+ 
+     /* Our value is in network byte-order. OVS_FORCE keeps sparse happy. */
+-    return (OVS_FORCE ovs_be32) ~crc;
++    return (OVS_FORCE ovs_be32) ~partial;
+ }
+diff --git a/lib/crc32c.h b/lib/crc32c.h
+index 92c7d7f..17c8190 100644
+--- a/lib/crc32c.h
++++ b/lib/crc32c.h
+@@ -20,6 +20,8 @@
+ 
+ #include "openvswitch/types.h"
+ 
++uint32_t crc32c_continue(uint32_t partial, const uint8_t *data, size_t size);
++ovs_be32 crc32c_finish(uint32_t partial);
+ ovs_be32 crc32c(const uint8_t *data, size_t);
+ 
+ #endif /* crc32c.h */
+diff --git a/lib/dp-packet.c b/lib/dp-packet.c
+index 4e4b8fb..32cc881 100644
+--- a/lib/dp-packet.c
++++ b/lib/dp-packet.c
+@@ -103,6 +103,9 @@ void
+ dp_packet_init_dpdk(struct dp_packet *b)
+ {
+     b->source = DPBUF_DPDK;
++#ifdef DPDK_NETDEV
++    b->mstate = NULL;
++#endif
+ }
+ 
+ /* Initializes 'b' as an empty dp_packet with an initial capacity of 'size'
+@@ -120,6 +123,21 @@ dp_packet_uninit(struct dp_packet *b)
+     if (b) {
+         if (b->source == DPBUF_MALLOC) {
+             free(dp_packet_base(b));
++
++#ifdef DPDK_NETDEV
++            /* Packet has been "linearized" */
++            if (b->mstate) {
++                b->source = DPBUF_DPDK;
++                b->mbuf.buf_addr = b->mstate->addr;
++                b->mbuf.buf_len = b->mstate->len;
++                b->mbuf.data_off = b->mstate->off;
++
++                free(b->mstate);
++                b->mstate = NULL;
++
++                free_dpdk_buf((struct dp_packet *) b);
++            }
++#endif
+         } else if (b->source == DPBUF_DPDK) {
+ #ifdef DPDK_NETDEV
+             /* If this dp_packet was allocated by DPDK it must have been
+diff --git a/lib/dp-packet.h b/lib/dp-packet.h
+index 2951fb8..1182b9c 100644
+--- a/lib/dp-packet.h
++++ b/lib/dp-packet.h
+@@ -27,7 +27,6 @@
+ 
+ #include "netdev-dpdk.h"
+ #include "openvswitch/list.h"
+-#include "packets.h"
+ #include "util.h"
+ #include "flow.h"
+ 
+@@ -46,6 +45,16 @@ enum OVS_PACKED_ENUM dp_packet_source {
+ 
+ #define DP_PACKET_CONTEXT_SIZE 64
+ 
++#ifdef DPDK_NETDEV
++/* Struct to save data for when a DPBUF_DPDK packet is converted to
++ * DPBUF_MALLOC. */
++struct mbuf_state {
++    void *addr;
++    uint16_t len;
++    uint16_t off;
++};
++#endif
++
+ /* Buffer for holding packet data.  A dp_packet is automatically reallocated
+  * as necessary if it grows too large for the available memory.
+  * By default the packet type is set to Ethernet (PT_ETH).
+@@ -53,6 +62,7 @@ enum OVS_PACKED_ENUM dp_packet_source {
+ struct dp_packet {
+ #ifdef DPDK_NETDEV
+     struct rte_mbuf mbuf;       /* DPDK mbuf */
++    struct mbuf_state *mstate;  /* Used when packet has been "linearized" */
+ #else
+     void *base_;                /* First byte of allocated space. */
+     uint16_t allocated_;        /* Number of bytes allocated. */
+@@ -85,6 +95,9 @@ static inline void dp_packet_set_data(struct dp_packet *, void *);
+ static inline void *dp_packet_base(const struct dp_packet *);
+ static inline void dp_packet_set_base(struct dp_packet *, void *);
+ 
++static inline bool dp_packet_is_linear(const struct dp_packet *);
++static inline void dp_packet_linearize(struct dp_packet *);
++
+ static inline uint32_t dp_packet_size(const struct dp_packet *);
+ static inline void dp_packet_set_size(struct dp_packet *, uint32_t);
+ 
+@@ -101,6 +114,7 @@ static inline void *dp_packet_l2_5(const struct dp_packet *);
+ static inline void dp_packet_set_l2_5(struct dp_packet *, void *);
+ static inline void *dp_packet_l3(const struct dp_packet *);
+ static inline void dp_packet_set_l3(struct dp_packet *, void *);
++static inline size_t dp_packet_l3_size(const struct dp_packet *);
+ static inline void *dp_packet_l4(const struct dp_packet *);
+ static inline void dp_packet_set_l4(struct dp_packet *, void *);
+ static inline size_t dp_packet_l4_size(const struct dp_packet *);
+@@ -137,6 +151,11 @@ static inline void *dp_packet_at(const struct dp_packet *, size_t offset,
+                                  size_t size);
+ static inline void *dp_packet_at_assert(const struct dp_packet *,
+                                         size_t offset, size_t size);
++
++static inline void
++dp_packet_copy_from_offset(const struct dp_packet *b, size_t offset,
++                           size_t size, void *buf);
++
+ #ifdef DPDK_NETDEV
+ static inline const struct rte_mbuf *
+ dp_packet_mbuf_from_offset(const struct dp_packet *b, size_t *offset);
+@@ -175,21 +194,22 @@ void *dp_packet_steal_data(struct dp_packet *);
+ static inline bool dp_packet_equal(const struct dp_packet *,
+                                    const struct dp_packet *);
+ 
++static inline ssize_t
++dp_packet_read_data(const struct dp_packet *b, size_t offset, size_t size,
++                    void **ptr, void *buf);
++
++
+ 
+ /* Frees memory that 'b' points to, as well as 'b' itself. */
+ static inline void
+ dp_packet_delete(struct dp_packet *b)
+ {
+     if (b) {
+-        if (b->source == DPBUF_DPDK) {
+-            /* If this dp_packet was allocated by DPDK it must have been
+-             * created as a dp_packet */
+-            free_dpdk_buf((struct dp_packet*) b);
+-            return;
+-        }
+-
+         dp_packet_uninit(b);
+-        free(b);
++
++        if (b->source != DPBUF_DPDK) {
++            free(b);
++        }
+     }
+ }
+ 
+@@ -359,6 +379,39 @@ dp_packet_try_pull(struct dp_packet *b, size_t size)
+         ? dp_packet_pull(b, size) : NULL;
+ }
+ 
++/* Reads 'size' bytes from 'offset' in 'b', linearly, to 'ptr', if 'buf' is
++ * NULL. Otherwise, if a 'buf' is provided, it must have 'size' bytes, and the
++ * data will be copied there, iff it is found to be non-linear. */
++static inline ssize_t
++dp_packet_read_data(const struct dp_packet *b, size_t offset, size_t size,
++                    void **ptr, void *buf) {
++    /* Zero copy */
++    if ((*ptr = dp_packet_at(b, offset, size)) != NULL) {
++        return 0;
++    }
++
++    /* Copy available linear data */
++    if (buf == NULL) {
++#ifdef DPDK_NETDEV
++        size_t mofs = offset;
++        const struct rte_mbuf *mbuf = dp_packet_mbuf_from_offset(b, &mofs);
++        *ptr = dp_packet_at(b, offset, mbuf->data_len - mofs);
++
++        return size - (mbuf->data_len - mofs);
++#else
++        /* Non-DPDK dp_packets should always hit the above condition */
++        ovs_assert(1);
++#endif
++    }
++
++    /* Copy all data */
++
++    *ptr = buf;
++    dp_packet_copy_from_offset(b, offset, size, buf);
++
++    return 0;
++}
++
+ static inline bool
+ dp_packet_is_eth(const struct dp_packet *b)
+ {
+@@ -428,6 +481,26 @@ dp_packet_set_l3(struct dp_packet *b, void *l3)
+     b->l3_ofs = l3 ? (char *) l3 - (char *) dp_packet_data(b) : UINT16_MAX;
+ }
+ 
++/* Returns the size of the l3 header. Caller must make sure both l3_ofs and
++ * l4_ofs are set*/
++static inline size_t
++dp_packet_l3h_size(const struct dp_packet *b)
++{
++    return b->l4_ofs - b->l3_ofs;
++}
++
++static inline size_t
++dp_packet_l3_size(const struct dp_packet *b)
++{
++    if (!dp_packet_may_pull(b, b->l3_ofs, 0)) {
++        return 0;
++    }
++
++    size_t l3_size = dp_packet_size(b) - b->l3_ofs;
++
++    return l3_size - dp_packet_l2_pad_size(b);
++}
++
+ static inline void *
+ dp_packet_l4(const struct dp_packet *b)
+ {
+@@ -475,21 +548,21 @@ static inline const void *
+ dp_packet_get_udp_payload(const struct dp_packet *b)
+ {
+     return OVS_LIKELY(dp_packet_l4_size(b) >= UDP_HEADER_LEN)
+-        ? (const char *)dp_packet_l4(b) + UDP_HEADER_LEN : NULL;
++        ? (const char *) dp_packet_l4(b) + UDP_HEADER_LEN : NULL;
+ }
+ 
+ static inline const void *
+ dp_packet_get_sctp_payload(const struct dp_packet *b)
+ {
+     return OVS_LIKELY(dp_packet_l4_size(b) >= SCTP_HEADER_LEN)
+-        ? (const char *)dp_packet_l4(b) + SCTP_HEADER_LEN : NULL;
++        ? (const char *) dp_packet_l4(b) + SCTP_HEADER_LEN : NULL;
+ }
+ 
+ static inline const void *
+ dp_packet_get_icmp_payload(const struct dp_packet *b)
+ {
+     return OVS_LIKELY(dp_packet_l4_size(b) >= ICMP_HEADER_LEN)
+-        ? (const char *)dp_packet_l4(b) + ICMP_HEADER_LEN : NULL;
++        ? (const char *) dp_packet_l4(b) + ICMP_HEADER_LEN : NULL;
+ }
+ 
+ static inline const void *
+@@ -737,6 +810,7 @@ dp_packet_mbuf_init(struct dp_packet *p)
+     p->mbuf.ol_flags = p->mbuf.tx_offload = p->mbuf.packet_type = 0;
+     p->mbuf.nb_segs = 1;
+     p->mbuf.next = NULL;
++    p->mstate = NULL;
+ }
+ 
+ static inline bool
+@@ -785,6 +859,74 @@ dp_packet_has_flow_mark(struct dp_packet *p, uint32_t *mark)
+     return false;
+ }
+ 
++static inline void
++dp_packet_copy_from_offset(const struct dp_packet *b, size_t offset,
++                           size_t size, void *buf) {
++    if (dp_packet_is_linear(b)) {
++        memcpy(buf, (char *)dp_packet_data(b) + offset, size);
++    } else {
++        const struct rte_mbuf *mbuf = dp_packet_mbuf_from_offset(b, &offset);
++        rte_pktmbuf_read(mbuf, offset, size, buf);
++    }
++}
++
++static inline bool
++dp_packet_is_linear(const struct dp_packet *b)
++{
++    if (b->source == DPBUF_DPDK) {
++        return rte_pktmbuf_is_contiguous(&b->mbuf);
++    }
++
++    return true;
++}
++
++/* Linearizes the data on packet 'b', by copying the data into system's memory.
++ * After this the packet is effectively a DPBUF_MALLOC packet. If 'b' is
++ * already linear, no operations are performed on the packet.
++ *
++ * This is an expensive operation which should only be performed as a last
++ * resort, when multi-segments are under use but data must be accessed
++ * linearly. */
++static inline void
++dp_packet_linearize(struct dp_packet *b)
++{
++    struct rte_mbuf *mbuf = CONST_CAST(struct rte_mbuf *, &b->mbuf);
++    struct dp_packet *pkt = CONST_CAST(struct dp_packet *, b);
++    struct mbuf_state *mstate = NULL;
++    void *dst = NULL;
++    uint32_t pkt_len = 0;
++
++    /* If already linear, bail out early. */
++    if (OVS_LIKELY(dp_packet_is_linear(b))) {
++        return;
++    }
++
++    pkt_len = dp_packet_size(pkt);
++    dst = xmalloc(pkt_len);
++
++    /* Copy packet's data to system's memory */
++    if (!rte_pktmbuf_read(mbuf, 0, pkt_len, dst)) {
++        free(dst);
++        return;
++    }
++
++    /* Free all mbufs except for the first */
++    dp_packet_clear(pkt);
++
++    /* Save mbuf's buf_addr to restore later */
++    mstate = xmalloc(sizeof(*mstate));
++    mstate->addr = pkt->mbuf.buf_addr;
++    mstate->len = pkt->mbuf.buf_len;
++    mstate->off = pkt->mbuf.data_off;
++    pkt->mstate = mstate;
++
++    /* Tranform DPBUF_DPDK packet into a DPBUF_MALLOC packet */
++    pkt->source = DPBUF_MALLOC;
++    pkt->mbuf.buf_addr = dst;
++    pkt->mbuf.buf_len = pkt_len;
++    pkt->mbuf.data_off = 0;
++    dp_packet_set_size(pkt, pkt_len);
++}
+ #else /* DPDK_NETDEV */
+ static inline bool
+ dp_packet_equal(const struct dp_packet *a, const struct dp_packet *b)
+@@ -913,6 +1055,24 @@ dp_packet_has_flow_mark(struct dp_packet *p OVS_UNUSED,
+ {
+     return false;
+ }
++
++static inline void
++dp_packet_copy_from_offset(const struct dp_packet *b, size_t offset,
++                           size_t size, void *buf)
++{
++    memcpy(buf, (char *)dp_packet_data(b) + offset, size);
++}
++
++static inline bool
++dp_packet_is_linear(const struct dp_packet *b OVS_UNUSED)
++{
++    return true;
++}
++
++static inline void
++dp_packet_linearize(struct dp_packet *b OVS_UNUSED)
++{
++}
+ #endif /* DPDK_NETDEV */
+ 
+ static inline void
+diff --git a/lib/dpif-netdev.c b/lib/dpif-netdev.c
+index 1564db9..4706fe1 100644
+--- a/lib/dpif-netdev.c
++++ b/lib/dpif-netdev.c
+@@ -5710,6 +5710,9 @@ dp_netdev_upcall(struct dp_netdev_pmd_thread *pmd, struct dp_packet *packet_,
+             .support = dp_netdev_support,
+         };
+ 
++        /* Gather the whole data for printing the packet (if debug enabled) */
++        dp_packet_linearize(packet_);
++
+         ofpbuf_init(&key, 0);
+         odp_flow_key_from_flow(&odp_parms, &key);
+         packet_str = ofp_dp_packet_to_string(packet_);
+@@ -5954,6 +5957,7 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
+     bool smc_enable_db;
+     size_t map_cnt = 0;
+     bool batch_enable = true;
++    int error;
+ 
+     atomic_read_relaxed(&pmd->dp->smc_enable_db, &smc_enable_db);
+     atomic_read_relaxed(&pmd->dp->emc_insert_min, &cur_min);
+@@ -6001,7 +6005,12 @@ dfc_processing(struct dp_netdev_pmd_thread *pmd,
+             }
+         }
+ 
+-        miniflow_extract(packet, &key->mf);
++        error = miniflow_extract(packet, &key->mf);
++        if (OVS_UNLIKELY(error)) {
++            dp_packet_delete(packet);
++            continue;
++        }
++
+         key->len = 0; /* Not computed yet. */
+         /* If EMC and SMC disabled skip hash computation */
+         if (smc_enable_db == true || cur_min != 0) {
+@@ -6623,8 +6632,13 @@ dp_execute_cb(void *aux_, struct dp_packet_batch *packets_,
+             }
+ 
+             struct dp_packet *packet;
++            int error;
+             DP_PACKET_BATCH_FOR_EACH (i, packet, packets_) {
+-                flow_extract(packet, &flow);
++                error = flow_extract(packet, &flow);
++                if (error) {
++                    dp_packet_delete(packet);
++                    continue;
++                }
+                 dpif_flow_hash(dp->dpif, &flow, sizeof flow, &ufid);
+                 dp_execute_userspace_action(pmd, packet, should_steal, &flow,
+                                             &ufid, &actions, userdata);
+diff --git a/lib/dpif-netlink.c b/lib/dpif-netlink.c
+index 0347060..2d44a49 100644
+--- a/lib/dpif-netlink.c
++++ b/lib/dpif-netlink.c
+@@ -1849,6 +1849,9 @@ dpif_netlink_operate__(struct dpif_netlink *dpif,
+                 }
+                 n_ops = i;
+             } else {
++                /* Linearize the packet to encode the whole message */
++                dp_packet_linearize(op->execute.packet);
++
+                 dpif_netlink_encode_execute(dpif->dp_ifindex, &op->execute,
+                                             &aux->request);
+             }
+diff --git a/lib/dpif.c b/lib/dpif.c
+index e35f111..d25b179 100644
+--- a/lib/dpif.c
++++ b/lib/dpif.c
+@@ -1407,6 +1407,7 @@ dpif_operate(struct dpif *dpif, struct dpif_op **ops, size_t n_ops,
+ 
+                 case DPIF_OP_EXECUTE:
+                     COVERAGE_INC(dpif_execute);
++
+                     log_execute_message(dpif, &this_module, &op->execute,
+                                         false, error);
+                     break;
+@@ -1834,6 +1835,11 @@ log_execute_message(const struct dpif *dpif,
+         uint64_t stub[1024 / 8];
+         struct ofpbuf md = OFPBUF_STUB_INITIALIZER(stub);
+ 
++        /* We will need the whole data for logging */
++        struct dp_packet *p = CONST_CAST(struct dp_packet *,
++                                         execute->packet);
++        dp_packet_linearize(p);
++
+         packet = ofp_packet_to_string(dp_packet_data(execute->packet),
+                                       dp_packet_size(execute->packet),
+                                       execute->packet->packet_type);
+diff --git a/lib/flow.c b/lib/flow.c
+index c60446f..8dcdc07 100644
+--- a/lib/flow.c
++++ b/lib/flow.c
+@@ -614,18 +614,24 @@ parse_nsh(const void **datap, size_t *sizep, struct ovs_key_nsh *key)
+  *      present and the packet has at least the content used for the fields
+  *      of interest for the flow, otherwise UINT16_MAX.
+  */
+-void
++int
+ flow_extract(struct dp_packet *packet, struct flow *flow)
+ {
+     struct {
+         struct miniflow mf;
+         uint64_t buf[FLOW_U64S];
+     } m;
++    int error;
+ 
+     COVERAGE_INC(flow_extract);
+ 
+-    miniflow_extract(packet, &m.mf);
++    error = miniflow_extract(packet, &m.mf);
++    if (error) {
++        return error;
++    }
+     miniflow_expand(&m.mf, flow);
++
++    return 0;
+ }
+ 
+ static inline bool
+@@ -693,8 +699,12 @@ ipv6_sanity_check(const struct ovs_16aligned_ip6_hdr *nh, size_t size)
+ }
+ 
+ /* Caller is responsible for initializing 'dst' with enough storage for
+- * FLOW_U64S * 8 bytes. */
+-void
++ * FLOW_U64S * 8 bytes.
++ *
++ * If multi-segment mbufs are under use, this function verifies if the packet
++ * headers are within the first mbuf of the chain, otherwise returns -EINVAL.
++ */
++int
+ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+ {
+     const struct pkt_metadata *md = &packet->md;
+@@ -816,6 +826,13 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+         int ip_len;
+         uint16_t tot_len;
+ 
++        /* Check if header is in first mbuf, otherwise return error */
++        if (!dp_packet_is_linear(packet)) {
++            if (!dp_packet_may_pull(packet, packet->l3_ofs, sizeof *nh)) {
++                return -EINVAL;
++            }
++        }
++
+         if (OVS_UNLIKELY(!ipv4_sanity_check(nh, size, &ip_len, &tot_len))) {
+             goto out;
+         }
+@@ -846,6 +863,12 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+         ovs_be32 tc_flow;
+         uint16_t plen;
+ 
++        if (!dp_packet_is_linear(packet)) {
++            if (!dp_packet_may_pull(packet, packet->l3_ofs, sizeof *nh)) {
++                return -EINVAL;
++            }
++        }
++
+         if (OVS_UNLIKELY(!ipv6_sanity_check(nh, size))) {
+             goto out;
+         }
+@@ -889,6 +912,14 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+         if (dl_type == htons(ETH_TYPE_ARP) ||
+             dl_type == htons(ETH_TYPE_RARP)) {
+             struct eth_addr arp_buf[2];
++
++            if (!dp_packet_is_linear(packet)) {
++                if (!dp_packet_may_pull(packet, packet->l3_ofs,
++                                        ARP_ETH_HEADER_LEN)) {
++                    return -EINVAL;
++                }
++            }
++
+             const struct arp_eth_header *arp = (const struct arp_eth_header *)
+                 data_try_pull(&data, &size, ARP_ETH_HEADER_LEN);
+ 
+@@ -936,6 +967,13 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+             if (OVS_LIKELY(size >= TCP_HEADER_LEN)) {
+                 const struct tcp_header *tcp = data;
+ 
++                if (!dp_packet_is_linear(packet)) {
++                    if (!dp_packet_may_pull(packet, packet->l4_ofs,
++                                            TCP_HEADER_LEN)) {
++                        return -EINVAL;
++                    }
++                }
++
+                 miniflow_push_be32(mf, arp_tha.ea[2], 0);
+                 miniflow_push_be32(mf, tcp_flags,
+                                    TCP_FLAGS_BE32(tcp->tcp_ctl));
+@@ -948,6 +986,13 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+             if (OVS_LIKELY(size >= UDP_HEADER_LEN)) {
+                 const struct udp_header *udp = data;
+ 
++                if (!dp_packet_is_linear(packet)) {
++                    if (!dp_packet_may_pull(packet, packet->l4_ofs,
++                                            UDP_HEADER_LEN)) {
++                        return -EINVAL;
++                    }
++                }
++
+                 miniflow_push_be16(mf, tp_src, udp->udp_src);
+                 miniflow_push_be16(mf, tp_dst, udp->udp_dst);
+                 miniflow_push_be16(mf, ct_tp_src, ct_tp_src);
+@@ -957,6 +1002,13 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+             if (OVS_LIKELY(size >= SCTP_HEADER_LEN)) {
+                 const struct sctp_header *sctp = data;
+ 
++                if (!dp_packet_is_linear(packet)) {
++                    if (!dp_packet_may_pull(packet, packet->l4_ofs,
++                                            SCTP_HEADER_LEN)) {
++                        return -EINVAL;
++                    }
++                }
++
+                 miniflow_push_be16(mf, tp_src, sctp->sctp_src);
+                 miniflow_push_be16(mf, tp_dst, sctp->sctp_dst);
+                 miniflow_push_be16(mf, ct_tp_src, ct_tp_src);
+@@ -966,6 +1018,13 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+             if (OVS_LIKELY(size >= ICMP_HEADER_LEN)) {
+                 const struct icmp_header *icmp = data;
+ 
++                if (!dp_packet_is_linear(packet)) {
++                    if (!dp_packet_may_pull(packet, packet->l4_ofs,
++                                            ICMP_HEADER_LEN)) {
++                        return -EINVAL;
++                    }
++                }
++
+                 miniflow_push_be16(mf, tp_src, htons(icmp->icmp_type));
+                 miniflow_push_be16(mf, tp_dst, htons(icmp->icmp_code));
+                 miniflow_push_be16(mf, ct_tp_src, ct_tp_src);
+@@ -975,6 +1034,13 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+             if (OVS_LIKELY(size >= IGMP_HEADER_LEN)) {
+                 const struct igmp_header *igmp = data;
+ 
++                if (!dp_packet_is_linear(packet)) {
++                    if (!dp_packet_may_pull(packet, packet->l4_ofs,
++                                            IGMP_HEADER_LEN)) {
++                        return -EINVAL;
++                    }
++                }
++
+                 miniflow_push_be16(mf, tp_src, htons(igmp->igmp_type));
+                 miniflow_push_be16(mf, tp_dst, htons(igmp->igmp_code));
+                 miniflow_push_be16(mf, ct_tp_src, ct_tp_src);
+@@ -987,8 +1053,18 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+             if (OVS_LIKELY(size >= sizeof(struct icmp6_hdr))) {
+                 const struct in6_addr *nd_target;
+                 struct eth_addr arp_buf[2];
+-                const struct icmp6_hdr *icmp = data_pull(&data, &size,
+-                                                         sizeof *icmp);
++                const struct icmp6_hdr *icmp;
++
++                if (!dp_packet_is_linear(packet)) {
++                    if (!dp_packet_may_pull(packet, packet->l4_ofs,
++                                            sizeof *icmp)) {
++                        return -EINVAL;
++                    }
++                }
++
++                icmp = data_pull(&data, &size, sizeof *icmp);
++
++
+                 if (parse_icmpv6(&data, &size, icmp, &nd_target, arp_buf)) {
+                     if (nd_target) {
+                         miniflow_push_words(mf, nd_target, nd_target,
+@@ -1011,6 +1087,7 @@ miniflow_extract(struct dp_packet *packet, struct miniflow *dst)
+     }
+  out:
+     dst->map = mf.map;
++    return 0;
+ }
+ 
+ ovs_be16
+@@ -3007,7 +3084,8 @@ static void
+ flow_compose_l4_csum(struct dp_packet *p, const struct flow *flow,
+                      uint32_t pseudo_hdr_csum)
+ {
+-    size_t l4_len = (char *) dp_packet_tail(p) - (char *) dp_packet_l4(p);
++    //size_t l4_len = (char *) dp_packet_tail(p) - (char *) dp_packet_l4(p);
++    size_t l4_len = dp_packet_l4_size(p);
+ 
+     if (!(flow->nw_frag & FLOW_NW_FRAG_ANY)
+         || !(flow->nw_frag & FLOW_NW_FRAG_LATER)) {
+@@ -3015,30 +3093,31 @@ flow_compose_l4_csum(struct dp_packet *p, const struct flow *flow,
+             struct tcp_header *tcp = dp_packet_l4(p);
+ 
+             tcp->tcp_csum = 0;
+-            tcp->tcp_csum = csum_finish(csum_continue(pseudo_hdr_csum,
+-                                                      tcp, l4_len));
++            tcp->tcp_csum = csum_finish(
++                packet_csum_continue(p, pseudo_hdr_csum, p->l4_ofs, l4_len));
+         } else if (flow->nw_proto == IPPROTO_UDP) {
+             struct udp_header *udp = dp_packet_l4(p);
+ 
+             udp->udp_csum = 0;
+-            udp->udp_csum = csum_finish(csum_continue(pseudo_hdr_csum,
+-                                                      udp, l4_len));
++            udp->udp_csum = csum_finish(
++                packet_csum_continue(p, pseudo_hdr_csum, p->l4_ofs, l4_len));
+         } else if (flow->nw_proto == IPPROTO_ICMP) {
+             struct icmp_header *icmp = dp_packet_l4(p);
+ 
+             icmp->icmp_csum = 0;
+-            icmp->icmp_csum = csum(icmp, l4_len);
++            icmp->icmp_csum = packet_csum(p, p->l4_ofs, l4_len);
+         } else if (flow->nw_proto == IPPROTO_IGMP) {
+             struct igmp_header *igmp = dp_packet_l4(p);
+ 
+             igmp->igmp_csum = 0;
+-            igmp->igmp_csum = csum(igmp, l4_len);
++            igmp->igmp_csum = packet_csum(p, p->l4_ofs, l4_len);
+         } else if (flow->nw_proto == IPPROTO_ICMPV6) {
+             struct icmp6_hdr *icmp = dp_packet_l4(p);
+ 
+             icmp->icmp6_cksum = 0;
+             icmp->icmp6_cksum = (OVS_FORCE uint16_t)
+-                csum_finish(csum_continue(pseudo_hdr_csum, icmp, l4_len));
++                csum_finish(packet_csum_continue(p, pseudo_hdr_csum, p->l4_ofs,
++                            l4_len));
+         }
+     }
+ }
+@@ -3064,12 +3143,12 @@ packet_expand(struct dp_packet *p, const struct flow *flow, size_t size)
+         eth->eth_type = htons(dp_packet_size(p));
+     } else if (dl_type_is_ip_any(flow->dl_type)) {
+         uint32_t pseudo_hdr_csum;
+-        size_t l4_len = (char *) dp_packet_tail(p) - (char *) dp_packet_l4(p);
++        size_t l4_len = dp_packet_l4_size(p);
+ 
+         if (flow->dl_type == htons(ETH_TYPE_IP)) {
+             struct ip_header *ip = dp_packet_l3(p);
+ 
+-            ip->ip_tot_len = htons(p->l4_ofs - p->l3_ofs + l4_len);
++            ip->ip_tot_len = htons(dp_packet_l3_size(p));
+             ip->ip_csum = 0;
+             ip->ip_csum = csum(ip, sizeof *ip);
+ 
+@@ -3153,7 +3232,7 @@ flow_compose(struct dp_packet *p, const struct flow *flow,
+         l4_len = flow_compose_l4(p, flow, l7, l7_len);
+ 
+         ip = dp_packet_l3(p);
+-        ip->ip_tot_len = htons(p->l4_ofs - p->l3_ofs + l4_len);
++        ip->ip_tot_len = htons(dp_packet_l3_size(p));
+         /* Checksum has already been zeroed by put_zeros call. */
+         ip->ip_csum = csum(ip, sizeof *ip);
+ 
+diff --git a/lib/flow.h b/lib/flow.h
+index 5ebdb1f..fe7f61c 100644
+--- a/lib/flow.h
++++ b/lib/flow.h
+@@ -68,7 +68,7 @@ extern int flow_vlan_limit;
+     DIV_ROUND_UP(FLOW_U64_OFFREM(FIELD) + MEMBER_SIZEOF(struct flow, FIELD), \
+                  sizeof(uint64_t))
+ 
+-void flow_extract(struct dp_packet *, struct flow *);
++int flow_extract(struct dp_packet *, struct flow *);
+ 
+ void flow_zero_wildcards(struct flow *, const struct flow_wildcards *);
+ void flow_unwildcard_tp_ports(const struct flow *, struct flow_wildcards *);
+@@ -539,7 +539,7 @@ struct pkt_metadata;
+ /* The 'dst' must follow with buffer space for FLOW_U64S 64-bit units.
+  * 'dst->map' is ignored on input and set on output to indicate which fields
+  * were extracted. */
+-void miniflow_extract(struct dp_packet *packet, struct miniflow *dst);
++int miniflow_extract(struct dp_packet *packet, struct miniflow *dst);
+ void miniflow_map_init(struct miniflow *, const struct flow *);
+ void flow_wc_map(const struct flow *, struct flowmap *);
+ size_t miniflow_alloc(struct miniflow *dsts[], size_t n,
+diff --git a/lib/mcast-snooping.c b/lib/mcast-snooping.c
+index 6730301..875b7a1 100644
+--- a/lib/mcast-snooping.c
++++ b/lib/mcast-snooping.c
+@@ -455,6 +455,7 @@ mcast_snooping_add_report(struct mcast_snooping *ms,
+     if (!igmpv3) {
+         return 0;
+     }
++    offset = (char *) igmpv3 - (char *) dp_packet_data(p);
+     ngrp = ntohs(igmpv3->ngrp);
+     offset += IGMPV3_HEADER_LEN;
+     while (ngrp--) {
+@@ -507,6 +508,7 @@ mcast_snooping_add_mld(struct mcast_snooping *ms,
+     if (!mld) {
+         return 0;
+     }
++    offset = (char *) mld - (char *) dp_packet_data(p);
+     ngrp = ntohs(mld->ngrp);
+     offset += MLD_HEADER_LEN;
+     addr = dp_packet_at(p, offset, sizeof(struct in6_addr));
+diff --git a/lib/netdev-bsd.c b/lib/netdev-bsd.c
+index 46698d5..cc4a87e 100644
+--- a/lib/netdev-bsd.c
++++ b/lib/netdev-bsd.c
+@@ -700,6 +700,9 @@ netdev_bsd_send(struct netdev *netdev_, int qid OVS_UNUSED,
+     }
+ 
+     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
++        /* We need the whole data to send the packet on the device */
++        dp_packet_linearize(packet);
++
+         const void *data = dp_packet_data(packet);
+         size_t size = dp_packet_size(packet);
+ 
+diff --git a/lib/netdev-dummy.c b/lib/netdev-dummy.c
+index 72b4f7a..f9c2c17 100644
+--- a/lib/netdev-dummy.c
++++ b/lib/netdev-dummy.c
+@@ -233,6 +233,9 @@ dummy_packet_stream_run(struct netdev_dummy *dev, struct dummy_packet_stream *s)
+ 
+         ASSIGN_CONTAINER(txbuf_node, ovs_list_front(&s->txq), list_node);
+         txbuf = txbuf_node->pkt;
++
++        dp_packet_linearize(txbuf);
++
+         retval = stream_send(s->stream, dp_packet_data(txbuf), dp_packet_size(txbuf));
+ 
+         if (retval > 0) {
+@@ -1087,6 +1090,9 @@ netdev_dummy_send(struct netdev *netdev, int qid OVS_UNUSED,
+ 
+     struct dp_packet *packet;
+     DP_PACKET_BATCH_FOR_EACH(i, packet, batch) {
++        /* We need the whole data to send the packet on the device */
++        dp_packet_linearize(packet);
++
+         const void *buffer = dp_packet_data(packet);
+         size_t size = dp_packet_size(packet);
+ 
+diff --git a/lib/netdev-linux.c b/lib/netdev-linux.c
+index f86dcd0..b8fe0ea 100644
+--- a/lib/netdev-linux.c
++++ b/lib/netdev-linux.c
+@@ -1379,6 +1379,9 @@ netdev_linux_sock_batch_send(int sock, int ifindex,
+ 
+     struct dp_packet *packet;
+     DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
++        /* We need the whole data to send the packet on the device */
++        dp_packet_linearize(packet);
++
+         iov[i].iov_base = dp_packet_data(packet);
+         iov[i].iov_len = dp_packet_size(packet);
+         mmsg[i].msg_hdr = (struct msghdr) { .msg_name = &sll,
+@@ -1432,6 +1435,9 @@ netdev_linux_tap_batch_send(struct netdev *netdev_,
+         ssize_t retval;
+         int error;
+ 
++        /* We need the whole data to send the packet on the device */
++        dp_packet_linearize(packet);
++
+         do {
+             retval = write(netdev->tap_fd, dp_packet_data(packet), size);
+             error = retval < 0 ? errno : 0;
+diff --git a/lib/netdev-native-tnl.c b/lib/netdev-native-tnl.c
+index 56baaa2..285b927 100644
+--- a/lib/netdev-native-tnl.c
++++ b/lib/netdev-native-tnl.c
+@@ -65,7 +65,7 @@ netdev_tnl_ip_extract_tnl_md(struct dp_packet *packet, struct flow_tnl *tnl,
+     void *nh;
+     struct ip_header *ip;
+     struct ovs_16aligned_ip6_hdr *ip6;
+-    void *l4;
++    char *l4;
+     int l3_size;
+ 
+     nh = dp_packet_l3(packet);
+@@ -79,15 +79,15 @@ netdev_tnl_ip_extract_tnl_md(struct dp_packet *packet, struct flow_tnl *tnl,
+ 
+     *hlen = sizeof(struct eth_header);
+ 
+-    l3_size = dp_packet_size(packet) -
+-              ((char *)nh - (char *)dp_packet_data(packet));
++    l3_size = dp_packet_l3_size(packet);
+ 
+     if (IP_VER(ip->ip_ihl_ver) == 4) {
+ 
+         ovs_be32 ip_src, ip_dst;
+ 
+         if (OVS_UNLIKELY(!dp_packet_ip_checksum_valid(packet))) {
+-            if (csum(ip, IP_IHL(ip->ip_ihl_ver) * 4)) {
++            if (packet_csum(packet, packet->l3_ofs,
++                            IP_IHL(ip->ip_ihl_ver) * 4)) {
+                 VLOG_WARN_RL(&err_rl, "ip packet has invalid checksum");
+                 return NULL;
+             }
+@@ -196,10 +196,8 @@ udp_extract_tnl_md(struct dp_packet *packet, struct flow_tnl *tnl,
+                 csum = packet_csum_pseudoheader(dp_packet_l3(packet));
+             }
+ 
+-            csum = csum_continue(csum, udp, dp_packet_size(packet) -
+-                                 ((const unsigned char *)udp -
+-                                  (const unsigned char *)dp_packet_eth(packet)
+-                                 ));
++            csum = packet_csum_continue(packet, csum, packet->l4_ofs,
++                                        dp_packet_l4_size(packet));
+             if (csum_finish(csum)) {
+                 return NULL;
+             }
+@@ -236,7 +234,7 @@ netdev_tnl_push_udp_header(const struct netdev *netdev OVS_UNUSED,
+             csum = packet_csum_pseudoheader(netdev_tnl_ip_hdr(dp_packet_data(packet)));
+         }
+ 
+-        csum = csum_continue(csum, udp, ip_tot_size);
++        csum = packet_csum_continue(packet, csum, packet->l4_ofs, ip_tot_size);
+         udp->udp_csum = csum_finish(csum);
+ 
+         if (!udp->udp_csum) {
+@@ -373,9 +371,8 @@ parse_gre_header(struct dp_packet *packet,
+     if (greh->flags & htons(GRE_CSUM)) {
+         ovs_be16 pkt_csum;
+ 
+-        pkt_csum = csum(greh, dp_packet_size(packet) -
+-                              ((const unsigned char *)greh -
+-                               (const unsigned char *)dp_packet_eth(packet)));
++        pkt_csum = packet_csum(packet, packet->l4_ofs,
++                               dp_packet_l4_size(packet));
+         if (pkt_csum) {
+             return -EINVAL;
+         }
+@@ -448,8 +445,9 @@ netdev_gre_push_header(const struct netdev *netdev,
+     greh = netdev_tnl_push_ip_header(packet, data->header, data->header_len, &ip_tot_size);
+ 
+     if (greh->flags & htons(GRE_CSUM)) {
+-        ovs_be16 *csum_opt = (ovs_be16 *) (greh + 1);
+-        *csum_opt = csum(greh, ip_tot_size);
++        greh = dp_packet_l4(packet);
++        ovs_be16 *csum_opt = (ovs_be16 *) greh;
++        *csum_opt = packet_csum(packet, packet->l4_ofs, ip_tot_size);
+     }
+ 
+     if (greh->flags & htons(GRE_SEQ)) {
+diff --git a/lib/odp-execute.c b/lib/odp-execute.c
+index 3b6890e..3afecf5 100644
+--- a/lib/odp-execute.c
++++ b/lib/odp-execute.c
+@@ -231,8 +231,14 @@ static void
+ odp_set_nd(struct dp_packet *packet, const struct ovs_key_nd *key,
+            const struct ovs_key_nd *mask)
+ {
+-    const struct ovs_nd_msg *ns = dp_packet_l4(packet);
+-    const struct ovs_nd_lla_opt *lla_opt = dp_packet_get_nd_payload(packet);
++    const struct ovs_nd_msg *ns;
++    const struct ovs_nd_lla_opt *lla_opt;
++
++    /* To orocess neighbor discovery options, we need the whole packet */
++    dp_packet_linearize(packet);
++
++    ns = dp_packet_l4(packet);
++    lla_opt = dp_packet_get_nd_payload(packet);
+ 
+     if (OVS_LIKELY(ns && lla_opt)) {
+         int bytes_remain = dp_packet_l4_size(packet) - sizeof(*ns);
+@@ -742,6 +748,7 @@ odp_execute_actions(void *dp, struct dp_packet_batch *batch, bool steal,
+             case OVS_HASH_ALG_L4: {
+                 struct flow flow;
+                 uint32_t hash;
++                int error;
+ 
+                 DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+                     /* RSS hash can be used here instead of 5tuple for
+@@ -750,7 +757,11 @@ odp_execute_actions(void *dp, struct dp_packet_batch *batch, bool steal,
+                         hash = dp_packet_get_rss_hash(packet);
+                         hash = hash_int(hash, hash_act->hash_basis);
+                     } else {
+-                        flow_extract(packet, &flow);
++                        error = flow_extract(packet, &flow);
++                        if (error) {
++                            dp_packet_delete(packet);
++                            continue;
++                        }
+                         hash = flow_hash_5tuple(&flow, hash_act->hash_basis);
+                     }
+                     packet->md.dp_hash = hash;
+@@ -760,9 +771,14 @@ odp_execute_actions(void *dp, struct dp_packet_batch *batch, bool steal,
+             case OVS_HASH_ALG_SYM_L4: {
+                 struct flow flow;
+                 uint32_t hash;
++                int error;
+ 
+                 DP_PACKET_BATCH_FOR_EACH (i, packet, batch) {
+-                    flow_extract(packet, &flow);
++                    error = flow_extract(packet, &flow);
++                    if (error) {
++                        dp_packet_delete(packet);
++                        continue;
++                    }
+                     hash = flow_hash_symmetric_l3l4(&flow,
+                                                     hash_act->hash_basis,
+                                                     false);
+diff --git a/lib/packets.c b/lib/packets.c
+index 2d6f77b..8b9c821 100644
+--- a/lib/packets.c
++++ b/lib/packets.c
+@@ -1007,12 +1007,18 @@ packet_rh_present(struct dp_packet *packet, uint8_t *nexthdr)
+     const struct ovs_16aligned_ip6_hdr *nh;
+     size_t len;
+     size_t remaining;
+-    uint8_t *data = dp_packet_l3(packet);
++    uint8_t *data;
+ 
+-    remaining = packet->l4_ofs - packet->l3_ofs;
++    remaining = dp_packet_l3h_size(packet);
+     if (remaining < sizeof *nh) {
+         return false;
+     }
++
++    /* We will need the whole data for processing the headers below */
++    dp_packet_linearize(packet);
++
++    data = dp_packet_l3(packet);
++
+     nh = ALIGNED_CAST(struct ovs_16aligned_ip6_hdr *, data);
+     data += sizeof *nh;
+     remaining -= sizeof *nh;
+@@ -1254,12 +1260,12 @@ packet_set_sctp_port(struct dp_packet *packet, ovs_be16 src, ovs_be16 dst)
+ 
+     old_csum = get_16aligned_be32(&sh->sctp_csum);
+     put_16aligned_be32(&sh->sctp_csum, 0);
+-    old_correct_csum = crc32c((void *)sh, tp_len);
++    old_correct_csum = packet_crc32c(packet, packet->l4_ofs, tp_len);
+ 
+     sh->sctp_src = src;
+     sh->sctp_dst = dst;
+ 
+-    new_csum = crc32c((void *)sh, tp_len);
++    new_csum = packet_crc32c(packet, packet->l4_ofs, tp_len);
+     put_16aligned_be32(&sh->sctp_csum, old_csum ^ old_correct_csum ^ new_csum);
+ }
+ 
+@@ -1293,6 +1299,9 @@ packet_set_nd(struct dp_packet *packet, const struct in6_addr *target,
+         return;
+     }
+ 
++    /* To process neighbor discovery options, we need the whole packet */
++    dp_packet_linearize(packet);
++
+     ns = dp_packet_l4(packet);
+     opt = &ns->options[0];
+     bytes_remain -= sizeof(*ns);
+@@ -1515,8 +1524,8 @@ compose_nd_ns(struct dp_packet *b, const struct eth_addr eth_src,
+ 
+     ns->icmph.icmp6_cksum = 0;
+     icmp_csum = packet_csum_pseudoheader6(dp_packet_l3(b));
+-    ns->icmph.icmp6_cksum = csum_finish(
+-        csum_continue(icmp_csum, ns, ND_MSG_LEN + ND_LLA_OPT_LEN));
++    ns->icmph.icmp6_cksum = csum_finish(packet_csum_continue(
++        b, icmp_csum, b->l4_ofs, ND_MSG_LEN + ND_LLA_OPT_LEN));
+ }
+ 
+ /* Compose an IPv6 Neighbor Discovery Neighbor Advertisement message. */
+@@ -1546,8 +1555,8 @@ compose_nd_na(struct dp_packet *b,
+ 
+     na->icmph.icmp6_cksum = 0;
+     icmp_csum = packet_csum_pseudoheader6(dp_packet_l3(b));
+-    na->icmph.icmp6_cksum = csum_finish(csum_continue(
+-        icmp_csum, na, ND_MSG_LEN + ND_LLA_OPT_LEN));
++    na->icmph.icmp6_cksum = csum_finish(packet_csum_continue(
++        b, icmp_csum, b->l4_ofs, ND_MSG_LEN + ND_LLA_OPT_LEN));
+ }
+ 
+ /* Compose an IPv6 Neighbor Discovery Router Advertisement message with
+@@ -1597,8 +1606,8 @@ compose_nd_ra(struct dp_packet *b,
+ 
+     ra->icmph.icmp6_cksum = 0;
+     uint32_t icmp_csum = packet_csum_pseudoheader6(dp_packet_l3(b));
+-    ra->icmph.icmp6_cksum = csum_finish(csum_continue(
+-        icmp_csum, ra, RA_MSG_LEN + ND_LLA_OPT_LEN + mtu_opt_len));
++    ra->icmph.icmp6_cksum = csum_finish(packet_csum_continue(
++        b, icmp_csum, b->l4_ofs, RA_MSG_LEN + ND_LLA_OPT_LEN + mtu_opt_len));
+ }
+ 
+ /* Append an IPv6 Neighbor Discovery Prefix Information option to a
+@@ -1627,8 +1636,8 @@ packet_put_ra_prefix_opt(struct dp_packet *b,
+     struct ovs_ra_msg *ra = dp_packet_l4(b);
+     ra->icmph.icmp6_cksum = 0;
+     uint32_t icmp_csum = packet_csum_pseudoheader6(dp_packet_l3(b));
+-    ra->icmph.icmp6_cksum = csum_finish(csum_continue(
+-        icmp_csum, ra, prev_l4_size + ND_PREFIX_OPT_LEN));
++    ra->icmph.icmp6_cksum = csum_finish(packet_csum_continue(
++        b, icmp_csum, b->l4_ofs, prev_l4_size + ND_PREFIX_OPT_LEN));
+ }
+ 
+ uint32_t
+@@ -1680,6 +1689,69 @@ packet_csum_upperlayer6(const struct ovs_16aligned_ip6_hdr *ip6,
+ }
+ #endif
+ 
++/* Wrapper around csum_continue() that takes segmented packets into account,
++ * traversing the segments to read data appropriately if so.
++ *
++ * It adds the 'n' bytes in packet 'b', from 'offset', to the partial IP
++ * checksum 'partial' and returns the updated checksum. */
++uint32_t
++packet_csum_continue(const struct dp_packet *b, uint32_t partial,
++                     uint16_t offset, size_t n)
++{
++    char *ptr = NULL;
++    size_t rem = 0;
++    size_t size = 0;
++
++    while (n > 1) {
++        rem = dp_packet_read_data(b, offset, n, (void *)&ptr, NULL);
++
++        size = n - rem;
++        partial = csum_continue(partial, ptr, size);
++
++        offset += size;
++        n = rem;
++    }
++
++    return partial;
++}
++
++/* Wrapper around csum() that takes segmented packets into account, traversing
++ * the segments to read data appropriately if so.
++ *
++ * Returns the IP checksum of the 'n' bytes in packet 'b',
++ * starting in 'offset'. */
++ovs_be16
++packet_csum(const struct dp_packet *b, uint16_t offset, size_t n)
++{
++    return csum_finish(packet_csum_continue(b, 0, offset, n));
++}
++
++/* Wrapper around crc32c() that takes segmented packets into account,
++ * traversing the segments to read data appropriately if so.
++ *
++ * It returns the CRC32c checksum as per RFC4960, of the 'n' bytes in packet
++ * 'b', from 'offset'. */
++ovs_be32
++packet_crc32c(const struct dp_packet *b, uint16_t offset, size_t n)
++{
++    char *ptr = NULL;
++    size_t rem = 0;
++    size_t size = 0;
++    uint32_t partial = 0xffffffffL;
++
++    while (n > 1) {
++        rem = dp_packet_read_data(b, offset, n, (void *)&ptr, NULL);
++
++        size = n - rem;
++        partial = crc32c_continue(partial, (uint8_t *) ptr, size);
++
++        offset += size;
++        n = rem;
++    }
++
++    return crc32c_finish(partial);
++}
++
+ void
+ IP_ECN_set_ce(struct dp_packet *pkt, bool is_ipv6)
+ {
+diff --git a/lib/packets.h b/lib/packets.h
+index 09a0ac3..9e7f5a1 100644
+--- a/lib/packets.h
++++ b/lib/packets.h
+@@ -1573,6 +1573,13 @@ void packet_put_ra_prefix_opt(struct dp_packet *,
+                               ovs_be32 preferred_lifetime,
+                               const ovs_be128 router_prefix);
+ uint32_t packet_csum_pseudoheader(const struct ip_header *);
++uint32_t
++packet_csum_continue(const struct dp_packet *b, uint32_t partial,
++                     uint16_t offset, size_t n);
++ovs_be16
++packet_csum(const struct dp_packet *b, uint16_t offset, size_t n);
++ovs_be32
++packet_crc32c(const struct dp_packet *b, uint16_t offset, size_t n);
+ void IP_ECN_set_ce(struct dp_packet *pkt, bool is_ipv6);
+ 
+ #define DNS_HEADER_LEN 12
+diff --git a/ofproto/ofproto-dpif-upcall.c b/ofproto/ofproto-dpif-upcall.c
+index dc30824..46a7c65 100644
+--- a/ofproto/ofproto-dpif-upcall.c
++++ b/ofproto/ofproto-dpif-upcall.c
+@@ -833,7 +833,10 @@ recv_upcalls(struct handler *handler)
+         upcall->actions = dupcall->actions;
+ 
+         pkt_metadata_from_flow(&dupcall->packet.md, flow);
+-        flow_extract(&dupcall->packet, flow);
++        error = flow_extract(&dupcall->packet, flow);
++        if (error) {
++            goto cleanup;
++        }
+ 
+         error = process_upcall(udpif, upcall,
+                                &upcall->odp_actions, &upcall->wc);
+@@ -1417,12 +1420,16 @@ process_upcall(struct udpif *udpif, struct upcall *upcall,
+     case SFLOW_UPCALL:
+         if (upcall->sflow) {
+             struct dpif_sflow_actions sflow_actions;
++            struct dp_packet *p = CONST_CAST(struct dp_packet *, packet);
+ 
+             memset(&sflow_actions, 0, sizeof sflow_actions);
+ 
+             actions_len = dpif_read_actions(udpif, upcall, flow,
+                                             upcall->type, &sflow_actions);
+-            dpif_sflow_received(upcall->sflow, packet, flow,
++            /* Gather the whole data */
++            dp_packet_linearize(p);
++
++            dpif_sflow_received(upcall->sflow, p, flow,
+                                 flow->in_port.odp_port, &upcall->cookie,
+                                 actions_len > 0 ? &sflow_actions : NULL);
+         }
+@@ -1483,6 +1490,10 @@ process_upcall(struct udpif *udpif, struct upcall *upcall,
+ 
+             const struct frozen_state *state = &recirc_node->state;
+ 
++            /* Gather the whole data */
++            struct dp_packet *p = CONST_CAST(struct dp_packet *, packet);
++            dp_packet_linearize(p);
++
+             struct ofproto_async_msg *am = xmalloc(sizeof *am);
+             *am = (struct ofproto_async_msg) {
+                 .controller_id = cookie->controller.controller_id,
+@@ -1490,9 +1501,9 @@ process_upcall(struct udpif *udpif, struct upcall *upcall,
+                 .pin = {
+                     .up = {
+                         .base = {
+-                            .packet = xmemdup(dp_packet_data(packet),
+-                                              dp_packet_size(packet)),
+-                            .packet_len = dp_packet_size(packet),
++                            .packet = xmemdup(dp_packet_data(p),
++                                              dp_packet_size(p)),
++                            .packet_len = dp_packet_size(p),
+                             .reason = cookie->controller.reason,
+                             .table_id = state->table_id,
+                             .cookie = get_32aligned_be64(
+diff --git a/ofproto/ofproto-dpif-xlate.c b/ofproto/ofproto-dpif-xlate.c
+index 839fddd..db7156a 100644
+--- a/ofproto/ofproto-dpif-xlate.c
++++ b/ofproto/ofproto-dpif-xlate.c
+@@ -2975,6 +2975,13 @@ xlate_normal(struct xlate_ctx *ctx)
+         && is_ip_any(flow)) {
+         struct mcast_snooping *ms = ctx->xbridge->ms;
+         struct mcast_group *grp = NULL;
++        struct dp_packet *p = CONST_CAST(struct dp_packet *,
++                                         ctx->xin->packet);
++
++        /* We will need the whole data for processing the packet below */
++        if (p) {
++            dp_packet_linearize(p);
++        }
+ 
+         if (is_igmp(flow, wc)) {
+             /*
+@@ -3279,9 +3286,15 @@ process_special(struct xlate_ctx *ctx, const struct xport *xport)
+     const struct flow *flow = &ctx->xin->flow;
+     struct flow_wildcards *wc = ctx->wc;
+     const struct xbridge *xbridge = ctx->xbridge;
+-    const struct dp_packet *packet = ctx->xin->packet;
++    struct dp_packet *packet = CONST_CAST(struct dp_packet *,
++                                          ctx->xin->packet);
+     enum slow_path_reason slow;
+ 
++    if (packet) {
++        /* Gather the whole data for further processing */
++        dp_packet_linearize(packet);
++    }
++
+     if (!xport) {
+         slow = 0;
+     } else if (xport->cfm && cfm_should_process_flow(xport->cfm, flow, wc)) {
+@@ -3374,9 +3387,13 @@ compose_table_xlate(struct xlate_ctx *ctx, const struct xport *out_dev,
+     struct xbridge *xbridge = out_dev->xbridge;
+     struct ofpact_output output;
+     struct flow flow;
++    int error;
+ 
+     ofpact_init(&output.ofpact, OFPACT_OUTPUT, sizeof output);
+-    flow_extract(packet, &flow);
++    error = flow_extract(packet, &flow);
++    if (error) {
++        return error;
++    }
+     flow.in_port.ofp_port = out_dev->ofp_port;
+     output.port = OFPP_TABLE;
+     output.max_len = 0;
+@@ -7604,10 +7621,14 @@ xlate_send_packet(const struct ofport_dpif *ofport, bool oam,
+     uint64_t ofpacts_stub[1024 / 8];
+     struct ofpbuf ofpacts;
+     struct flow flow;
++    int error;
+ 
+     ofpbuf_use_stack(&ofpacts, ofpacts_stub, sizeof ofpacts_stub);
++    error = flow_extract(packet, &flow);
++    if (error) {
++        return error;
++    }
+     /* Use OFPP_NONE as the in_port to avoid special packet processing. */
+-    flow_extract(packet, &flow);
+     flow.in_port.ofp_port = OFPP_NONE;
+ 
+     xport = xport_lookup(xcfg, ofport);
+diff --git a/tests/test-rstp.c b/tests/test-rstp.c
+index 01aeaf8..2b886a0 100644
+--- a/tests/test-rstp.c
++++ b/tests/test-rstp.c
+@@ -86,8 +86,13 @@ send_bpdu(struct dp_packet *pkt, void *port_, void *b_)
+     assert(port_no < b->n_ports);
+     lan = b->ports[port_no];
+     if (lan) {
+-        const void *data = dp_packet_l3(pkt);
+-        size_t size = (char *) dp_packet_tail(pkt) - (char *) data;
++        const char *data;
++        size_t size;
++
++        dp_packet_linearize(pkt);
++
++        data = dp_packet_l3(pkt);
++        size = dp_packet_size(pkt) - pkt->l3_ofs;
+         int i;
+ 
+         for (i = 0; i < lan->n_conns; i++) {
+diff --git a/tests/test-stp.c b/tests/test-stp.c
+index c85c99d..71265d5 100644
+--- a/tests/test-stp.c
++++ b/tests/test-stp.c
+@@ -94,8 +94,13 @@ send_bpdu(struct dp_packet *pkt, int port_no, void *b_)
+     assert(port_no < b->n_ports);
+     lan = b->ports[port_no];
+     if (lan) {
+-        const void *data = dp_packet_l3(pkt);
+-        size_t size = (char *) dp_packet_tail(pkt) - (char *) data;
++        const char *data;
++        size_t size;
++
++        dp_packet_linearize(pkt);
++
++        data = dp_packet_l3(pkt);
++        size = dp_packet_size(pkt) - pkt->l3_ofs;
+         int i;
+ 
+         for (i = 0; i < lan->n_conns; i++) {
+
+From patchwork Sat Jan 12 20:37:53 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023982
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX3f2gbkz9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:52:14 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id 3C5CF241A;
+ Sat, 12 Jan 2019 20:48:44 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 93BBA23F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:26 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id ED2F3710
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:25 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:25 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394920"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:23 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:53 +0000
+Message-Id: <1547325477-207468-8-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, Michael Qiu <qiudayu@chinac.com>, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 07/11] netdev-dpdk: copy large packet to
+ multi-seg. mbufs
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+From: Mark Kavanagh <mark.b.kavanagh@intel.com>
+
+Currently, packets are only copied to a single segment in the function
+dpdk_do_tx_copy(). This could be an issue in the case of jumbo frames,
+particularly when multi-segment mbufs are involved.
+
+This patch calculates the number of segments needed by a packet and
+copies the data to each segment.
+
+A new function, dpdk_buf_alloc(), has also been introduced as a wrapper
+around the nonpmd_mp_mutex to serialise allocations from a non-pmd
+context.
+
+Co-authored-by: Michael Qiu <qiudayu@chinac.com>
+Co-authored-by: Tiago Lam <tiago.lam@intel.com>
+
+Signed-off-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+Signed-off-by: Michael Qiu <qiudayu@chinac.com>
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+---
+ lib/netdev-dpdk.c | 89 +++++++++++++++++++++++++++++++++++++++++++++++++------
+ 1 file changed, 80 insertions(+), 9 deletions(-)
+
+diff --git a/lib/netdev-dpdk.c b/lib/netdev-dpdk.c
+index a0df9fc..7a9add7 100644
+--- a/lib/netdev-dpdk.c
++++ b/lib/netdev-dpdk.c
+@@ -550,6 +550,25 @@ dpdk_rte_mzalloc(size_t sz)
+     return rte_zmalloc(OVS_VPORT_DPDK, sz, OVS_CACHE_LINE_SIZE);
+ }
+ 
++static struct rte_mbuf *
++dpdk_buf_alloc(struct rte_mempool *mp)
++{
++    struct rte_mbuf *mbuf = NULL;
++
++    /* If non-pmd we need to lock on nonpmd_mp_mutex mutex. */
++    if (dpdk_thread_is_pmd()) {
++        mbuf = rte_pktmbuf_alloc(mp);
++    } else {
++        ovs_mutex_lock(&nonpmd_mp_mutex);
++
++        mbuf = rte_pktmbuf_alloc(mp);
++
++        ovs_mutex_unlock(&nonpmd_mp_mutex);
++    }
++
++    return mbuf;
++}
++
+ void
+ free_dpdk_buf(struct dp_packet *p)
+ {
+@@ -2333,6 +2352,56 @@ out:
+     }
+ }
+ 
++static int
++dpdk_copy_dp_packet_to_mbuf(struct dp_packet *packet, struct rte_mbuf **head,
++                            struct rte_mempool *mp)
++{
++    struct rte_mbuf *mbuf, *fmbuf;
++    uint16_t max_data_len;
++    uint32_t nb_segs = 0;
++    uint32_t size = 0;
++
++    /* We will need the whole data for copying below. */
++    if (!dp_packet_is_linear(packet)) {
++        dp_packet_linearize(packet);
++    }
++
++    /* Allocate first mbuf to know the size of data available. */
++    fmbuf = mbuf = *head = dpdk_buf_alloc(mp);
++    if (OVS_UNLIKELY(!mbuf)) {
++        return ENOMEM;
++    }
++
++    size = dp_packet_size(packet);
++
++    /* All new allocated mbuf's max data len is the same. */
++    max_data_len = mbuf->buf_len - mbuf->data_off;
++
++    /* Calculate # of output mbufs. */
++    nb_segs = size / max_data_len;
++    if (size % max_data_len) {
++        nb_segs = nb_segs + 1;
++    }
++
++    /* Allocate additional mbufs, less the one alredy allocated above. */
++    for (int i = 1; i < nb_segs; i++) {
++        mbuf->next = dpdk_buf_alloc(mp);
++        if (!mbuf->next) {
++            free_dpdk_buf(CONTAINER_OF(fmbuf, struct dp_packet, mbuf));
++            fmbuf = NULL;
++            return ENOMEM;
++        }
++        mbuf = mbuf->next;
++    }
++
++    fmbuf->nb_segs = nb_segs;
++    fmbuf->pkt_len = size;
++
++    dp_packet_mbuf_write(fmbuf, 0, size, dp_packet_data(packet));
++
++    return 0;
++}
++
+ /* Tx function. Transmit packets indefinitely */
+ static void
+ dpdk_do_tx_copy(struct netdev *netdev, int qid, struct dp_packet_batch *batch)
+@@ -2349,6 +2418,7 @@ dpdk_do_tx_copy(struct netdev *netdev, int qid, struct dp_packet_batch *batch)
+     struct rte_mbuf *pkts[PKT_ARRAY_SIZE];
+     uint32_t cnt = batch_cnt;
+     uint32_t dropped = 0;
++    uint32_t i;
+ 
+     if (dev->type != DPDK_DEV_VHOST) {
+         /* Check if QoS has been configured for this netdev. */
+@@ -2359,28 +2429,29 @@ dpdk_do_tx_copy(struct netdev *netdev, int qid, struct dp_packet_batch *batch)
+ 
+     uint32_t txcnt = 0;
+ 
+-    for (uint32_t i = 0; i < cnt; i++) {
++    for (i = 0; i < cnt; i++) {
+         struct dp_packet *packet = batch->packets[i];
+         uint32_t size = dp_packet_size(packet);
++        int err = 0;
+ 
+         if (OVS_UNLIKELY(size > dev->max_packet_len)) {
+             VLOG_WARN_RL(&rl, "Too big size %u max_packet_len %d",
+                          size, dev->max_packet_len);
+-
+             dropped++;
+             continue;
+         }
+ 
+-        pkts[txcnt] = rte_pktmbuf_alloc(dev->dpdk_mp->mp);
+-        if (OVS_UNLIKELY(!pkts[txcnt])) {
++        err = dpdk_copy_dp_packet_to_mbuf(packet, &pkts[txcnt],
++                                          dev->dpdk_mp->mp);
++        if (err != 0) {
++            if (err == ENOMEM) {
++                VLOG_ERR_RL(&rl, "Failed to alloc mbufs! %u packets dropped",
++                            cnt - i);
++            }
++
+             dropped += cnt - i;
+             break;
+         }
+-
+-        /* We have to do a copy for now */
+-        memcpy(rte_pktmbuf_mtod(pkts[txcnt], void *),
+-               dp_packet_data(packet), size);
+-        dp_packet_set_size((struct dp_packet *)pkts[txcnt], size);
+         dp_packet_copy_mbuf_flags((struct dp_packet *)pkts[txcnt], packet);
+ 
+         txcnt++;
+
+From patchwork Sat Jan 12 20:37:54 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023983
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX452LjMz9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:52:37 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id E32BB2437;
+ Sat, 12 Jan 2019 20:48:44 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 6245523F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:30 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 220D6806
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:29 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:28 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394926"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:26 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:54 +0000
+Message-Id: <1547325477-207468-9-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 08/11] netdev-dpdk: support multi-segment
+ jumbo frames
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+From: Mark Kavanagh <mark.b.kavanagh@intel.com>
+
+Currently, jumbo frame support for OvS-DPDK is implemented by
+increasing the size of mbufs within a mempool, such that each mbuf
+within the pool is large enough to contain an entire jumbo frame of
+a user-defined size. Typically, for each user-defined MTU,
+'requested_mtu', a new mempool is created, containing mbufs of size
+~requested_mtu.
+
+With the multi-segment approach, a port uses a single mempool,
+(containing standard/default-sized mbufs of ~2k bytes), irrespective
+of the user-requested MTU value. To accommodate jumbo frames, mbufs
+are chained together, where each mbuf in the chain stores a portion of
+the jumbo frame. Each mbuf in the chain is termed a segment, hence the
+name.
+
+== Enabling multi-segment mbufs ==
+Multi-segment and single-segment mbufs are mutually exclusive, and the
+user must decide on which approach to adopt on init. The introduction
+of a new OVSDB field, 'dpdk-multi-seg-mbufs', facilitates this. This
+is a global boolean value, which determines how jumbo frames are
+represented across all DPDK ports. In the absence of a user-supplied
+value, 'dpdk-multi-seg-mbufs' defaults to false, i.e. multi-segment
+mbufs must be explicitly enabled / single-segment mbufs remain the
+default.
+
+Setting the field is identical to setting existing DPDK-specific OVSDB
+fields:
+
+    ovs-vsctl set Open_vSwitch . other_config:dpdk-init=true
+    ovs-vsctl set Open_vSwitch . other_config:dpdk-lcore-mask=0x10
+    ovs-vsctl set Open_vSwitch . other_config:dpdk-socket-mem=4096,0
+==> ovs-vsctl set Open_vSwitch . other_config:dpdk-multi-seg-mbufs=true
+
+Co-authored-by: Tiago Lam <tiago.lam@intel.com>
+
+Signed-off-by: Mark Kavanagh <mark.b.kavanagh@intel.com>
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+---
+ Documentation/topics/dpdk/jumbo-frames.rst | 73 ++++++++++++++++++++++++++++++
+ Documentation/topics/dpdk/memory.rst       | 36 +++++++++++++++
+ NEWS                                       |  1 +
+ lib/dpdk.c                                 |  8 ++++
+ lib/netdev-dpdk.c                          | 69 ++++++++++++++++++++++++----
+ lib/netdev-dpdk.h                          |  1 +
+ vswitchd/vswitch.xml                       | 22 +++++++++
+ 7 files changed, 202 insertions(+), 8 deletions(-)
+
+diff --git a/Documentation/topics/dpdk/jumbo-frames.rst b/Documentation/topics/dpdk/jumbo-frames.rst
+index 00360b4..9804bbb 100644
+--- a/Documentation/topics/dpdk/jumbo-frames.rst
++++ b/Documentation/topics/dpdk/jumbo-frames.rst
+@@ -71,3 +71,76 @@ Jumbo frame support has been validated against 9728B frames, which is the
+ largest frame size supported by Fortville NIC using the DPDK i40e driver, but
+ larger frames and other DPDK NIC drivers may be supported. These cases are
+ common for use cases involving East-West traffic only.
++
++-------------------
++Multi-segment mbufs
++-------------------
++
++Instead of increasing the size of mbufs within a mempool, such that each mbuf
++within the pool is large enough to contain an entire jumbo frame of a
++user-defined size, mbufs can be chained together instead. In this approach each
++mbuf in the chain stores a portion of the jumbo frame, by default ~2K bytes,
++irrespective of the user-requested MTU value. Since each mbuf in the chain is
++termed a segment, this approach is named "multi-segment mbufs".
++
++This approach may bring more flexibility in use cases where the maximum packet
++length may be hard to guess. For example, in cases where packets originate from
++sources marked for offload (such as TSO), each packet may be larger than the
++MTU, and as such, when forwarding it to a DPDK port a single mbuf may not be
++enough to hold all of the packet's data.
++
++Multi-segment and single-segment mbufs are mutually exclusive, and the user
++must decide on which approach to adopt on initialisation. If multi-segment
++mbufs is to be enabled, it can be done so with the following command::
++
++    $ ovs-vsctl set Open_vSwitch . other_config:dpdk-multi-seg-mbufs=true
++
++Single-segment mbufs still remain the default when using OvS-DPDK, and the
++above option `dpdk-multi-seg-mbufs` must be explicitly set to `true` if
++multi-segment mbufs are to be used.
++
++~~~~~~~~~~~~~~~~~
++Performance notes
++~~~~~~~~~~~~~~~~~
++
++When using multi-segment mbufs some PMDs may not support vectorized Tx
++functions, due to its non-contiguous nature. As a result this can hit
++performance for smaller packet sizes. For example, on a setup sending 64B
++packets at line rate, a decrease of ~20% has been observed. The performance
++impact stops being noticeable for larger packet sizes, although the exact size
++will depend on each PMD, and vary between architectures.
++
++Tests performed with the i40e PMD driver only showed this limitation for 64B
++packets, and the same rate was observed when comparing multi-segment mbufs and
++single-segment mbuf for 128B packets. In other words, the 20% drop in
++performance was not observed for packets >= 128B during this test case.
++
++Because of this, multi-segment mbufs is not advised to be used with smaller
++packet sizes, such as 64B.
++
++Also, note that using multi-segment mbufs won't improve memory usage. For a
++packet of 9000B, for example, which would be stored on a single mbuf when using
++the single-segment approach, 5 mbufs (9000/2176) of 2176B would be needed to
++store the same data using the multi-segment mbufs approach (refer to
++:doc:`/topics/dpdk/memory` for examples).
++
++~~~~~~~~~~~
++Limitations
++~~~~~~~~~~~
++
++Because multi-segment mbufs store the data uncontiguously in memory, when used
++across DPDK and non-DPDK ports, a performance drop is expected, as the mbufs'
++content needs to be copied into a contiguous region in memory to be used by
++operations such as write(). Exchanging traffic between DPDK ports (such as
++vhost and physical ports) doesn't have this limitation, however.
++
++Other operations may have a hit in performance as well, under the current
++implementation. For example, operations that require a checksum to be performed
++on the data, such as pushing / popping a VXLAN header, will also require a copy
++of the data (if it hasn't been copied before), or when using the Userspace
++connection tracker.
++
++Finally, it is assumed that, when enabling the multi-segment mbufs, a packet
++header falls within the first mbuf, which is 2K in size. This is required
++because at the moment the miniflow extraction and setting of the layer headers
++(l2_5, l3, l4) assumes contiguous access to memory.
+diff --git a/Documentation/topics/dpdk/memory.rst b/Documentation/topics/dpdk/memory.rst
+index 9ebfd11..7f414ef 100644
+--- a/Documentation/topics/dpdk/memory.rst
++++ b/Documentation/topics/dpdk/memory.rst
+@@ -82,6 +82,14 @@ Users should be aware of the following:
+ Below are a number of examples of memory requirement calculations for both
+ shared and per port memory models.
+ 
++.. note::
++
++   If multi-segment mbufs is enabled (:doc:`/topics/dpdk/jumbo-frames`), both
++   the **number of mbufs** and the **size of each mbuf** might be adjusted,
++   which might change slightly the amount of memory required for a given
++   mempool. Examples of how these calculations are performed are also provided
++   below, for the higher MTU case of each memory model.
++
+ Shared Memory Calculations
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 
+@@ -142,6 +150,20 @@ Example 4
+  Mbuf size = 10176 Bytes
+  Memory required = 262144 * 10176 = 2667 MB
+ 
++Example 5 (multi-segment mbufs enabled)
+++++++++++++++++++++++++++++++++++++++++
++::
++
++ MTU = 9000 Bytes
++ Number of mbufs = 262144
++ Mbuf size = 2048 Bytes
++ Memory required = 262144 * (2048 * 5) = 2684 MB
++
++.. note::
++
++   In order to hold 9000B of data, 5 mbufs of 2048B each will be needed, hence
++   the "5" above in 2048 * 5.
++
+ Per Port Memory Calculations
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 
+@@ -214,3 +236,17 @@ Example 3: (2 rxq, 2 PMD, 9000 MTU)
+  Number of mbufs = (2 * 2048) + (3 * 2048) + (1 * 32) + (16384) = 26656
+  Mbuf size = 10176 Bytes
+  Memory required = 26656 * 10176 = 271 MB
++
++Example 4: (2 rxq, 2 PMD, 9000 MTU, multi-segment mbufs enabled)
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
++::
++
++ MTU = 9000
++ Number of mbufs = (2 * 2048) + (3 * 2048) + (1 * 32) + (16384) = 26656
++ Mbuf size = 2048 Bytes
++ Memory required = 26656 * (2048 * 5) = 273 MB
++
++.. note::
++
++   In order to hold 9000B of data, 5 mbufs of 2048B each will be needed, hence
++   the "5" above in 2048 * 5.
+diff --git a/NEWS b/NEWS
+index 2de844f..98f5a9b 100644
+--- a/NEWS
++++ b/NEWS
+@@ -76,6 +76,7 @@ v2.10.0 - 18 Aug 2018
+      * Allow init to fail and record DPDK status/version in OVS database.
+      * Add experimental flow hardware offload support
+      * Support both shared and per port mempools for DPDK devices.
++     * Add support for multi-segment mbufs.
+    - Userspace datapath:
+      * Commands ovs-appctl dpif-netdev/pmd-*-show can now work on a single PMD
+      * Detailed PMD performance metrics available with new command
+diff --git a/lib/dpdk.c b/lib/dpdk.c
+index 0ee3e19..ac89fd8 100644
+--- a/lib/dpdk.c
++++ b/lib/dpdk.c
+@@ -497,6 +497,14 @@ dpdk_init__(const struct smap *ovs_other_config)
+ 
+     /* Finally, register the dpdk classes */
+     netdev_dpdk_register();
++
++    bool multi_seg_mbufs_enable = smap_get_bool(ovs_other_config,
++            "dpdk-multi-seg-mbufs", false);
++    if (multi_seg_mbufs_enable) {
++        VLOG_INFO("DPDK multi-segment mbufs enabled\n");
++        netdev_dpdk_multi_segment_mbufs_enable();
++    }
++
+     return true;
+ }
+ 
+diff --git a/lib/netdev-dpdk.c b/lib/netdev-dpdk.c
+index 7a9add7..4e96b37 100644
+--- a/lib/netdev-dpdk.c
++++ b/lib/netdev-dpdk.c
+@@ -70,6 +70,7 @@ enum {VIRTIO_RXQ, VIRTIO_TXQ, VIRTIO_QNUM};
+ 
+ VLOG_DEFINE_THIS_MODULE(netdev_dpdk);
+ static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(5, 20);
++static bool dpdk_multi_segment_mbufs = false;
+ 
+ #define DPDK_PORT_WATCHDOG_INTERVAL 5
+ 
+@@ -519,6 +520,12 @@ is_dpdk_class(const struct netdev_class *class)
+            || class->destruct == netdev_dpdk_vhost_destruct;
+ }
+ 
++void
++netdev_dpdk_multi_segment_mbufs_enable(void)
++{
++    dpdk_multi_segment_mbufs = true;
++}
++
+ /* DPDK NIC drivers allocate RX buffers at a particular granularity, typically
+  * aligned at 1k or less. If a declared mbuf size is not a multiple of this
+  * value, insufficient buffers are allocated to accomodate the packet in its
+@@ -632,14 +639,17 @@ dpdk_mp_sweep(void) OVS_REQUIRES(dpdk_mp_mutex)
+     }
+ }
+ 
+-/* Calculating the required number of mbufs differs depending on the
+- * mempool model being used. Check if per port memory is in use before
+- * calculating.
+- */
++/* Calculating the required number of mbufs differs depending on the mempool
++ * model (per port vs shared mempools) being used.
++ * In case multi-segment mbufs are being used, the number of mbufs is also
++ * increased, to account for the multiple mbufs needed to hold each packet's
++ * data. */
+ static uint32_t
+-dpdk_calculate_mbufs(struct netdev_dpdk *dev, int mtu, bool per_port_mp)
++dpdk_calculate_mbufs(struct netdev_dpdk *dev, int mtu, uint32_t mbuf_size,
++                     bool per_port_mp)
+ {
+     uint32_t n_mbufs;
++    uint16_t max_frame_len = 0;
+ 
+     if (!per_port_mp) {
+         /* Shared memory are being used.
+@@ -668,6 +678,22 @@ dpdk_calculate_mbufs(struct netdev_dpdk *dev, int mtu, bool per_port_mp)
+                   + MIN_NB_MBUF;
+     }
+ 
++    /* If multi-segment mbufs are used, we also increase the number of
++     * mbufs used. This is done by calculating how many mbufs are needed to
++     * hold the data on a single packet of MTU size. For example, for a
++     * received packet of 9000B, 5 mbufs (9000 / 2048) are needed to hold
++     * the data - 4 more than with single-mbufs (as mbufs' size is extended
++     * to hold all data) */
++    max_frame_len = MTU_TO_MAX_FRAME_LEN(dev->requested_mtu);
++    if (dpdk_multi_segment_mbufs && mbuf_size < max_frame_len) {
++        uint16_t nb_segs = max_frame_len / mbuf_size;
++        if (max_frame_len % mbuf_size) {
++            nb_segs += 1;
++        }
++
++        n_mbufs *= nb_segs;
++    }
++
+     return n_mbufs;
+ }
+ 
+@@ -696,8 +722,12 @@ dpdk_mp_create(struct netdev_dpdk *dev, int mtu, bool per_port_mp)
+ 
+     /* Get the size of each mbuf, based on the MTU */
+     mbuf_size = MTU_TO_FRAME_LEN(mtu);
++    /* multi-segment mbufs - use standard mbuf size */
++    if (dpdk_multi_segment_mbufs) {
++        mbuf_size = dpdk_buf_size(ETHER_MTU);
++    }
+ 
+-    n_mbufs = dpdk_calculate_mbufs(dev, mtu, per_port_mp);
++    n_mbufs = dpdk_calculate_mbufs(dev, mtu, mbuf_size, per_port_mp);
+ 
+     do {
+         /* Full DPDK memory pool name must be unique and cannot be
+@@ -956,6 +986,7 @@ dpdk_eth_dev_port_config(struct netdev_dpdk *dev, int n_rxq, int n_txq)
+     int diag = 0;
+     int i;
+     struct rte_eth_conf conf = port_conf;
++    struct rte_eth_txconf txconf;
+     struct rte_eth_dev_info info;
+     uint16_t conf_mtu;
+ 
+@@ -971,6 +1002,27 @@ dpdk_eth_dev_port_config(struct netdev_dpdk *dev, int n_rxq, int n_txq)
+         }
+     }
+ 
++    /* Multi-segment-mbuf-specific setup. */
++    if (dpdk_multi_segment_mbufs) {
++        if (info.tx_offload_capa & DEV_TX_OFFLOAD_MULTI_SEGS) {
++            /* DPDK PMDs typically attempt to use simple or vectorized
++             * transmit functions, neither of which are compatible with
++             * multi-segment mbufs. Ensure that these are disabled when
++             * multi-segment mbufs are enabled. */
++            conf.txmode.offloads |= DEV_TX_OFFLOAD_MULTI_SEGS;
++        } else {
++            VLOG_ERR("Interface %s doesn't support multi-segment mbufs",
++                     dev->up.name);
++            conf.txmode.offloads &= ~DEV_TX_OFFLOAD_MULTI_SEGS;
++
++            /* Fail interface init if OFFLOAD_MULTI_SEGS is not supported. */
++            return -ENOTSUP;
++        }
++
++        txconf = info.default_txconf;
++        txconf.offloads = conf.txmode.offloads;
++    }
++
+     conf.intr_conf.lsc = dev->lsc_interrupt_mode;
+ 
+     if (dev->hw_ol_features & NETDEV_RX_CHECKSUM_OFFLOAD) {
+@@ -1022,7 +1074,9 @@ dpdk_eth_dev_port_config(struct netdev_dpdk *dev, int n_rxq, int n_txq)
+ 
+         for (i = 0; i < n_txq; i++) {
+             diag = rte_eth_tx_queue_setup(dev->port_id, i, dev->txq_size,
+-                                          dev->socket_id, NULL);
++                                          dev->socket_id,
++                                          dpdk_multi_segment_mbufs ? &txconf
++                                                                   : NULL);
+             if (diag) {
+                 VLOG_INFO("Interface %s unable to setup txq(%d): %s",
+                           dev->up.name, i, rte_strerror(-diag));
+@@ -4221,7 +4275,6 @@ unlock:
+     return err;
+ }
+ 
+-
+ /* Find rte_flow with @ufid */
+ static struct rte_flow *
+ ufid_to_rte_flow_find(const ovs_u128 *ufid) {
+diff --git a/lib/netdev-dpdk.h b/lib/netdev-dpdk.h
+index b7d02a7..a3339fe 100644
+--- a/lib/netdev-dpdk.h
++++ b/lib/netdev-dpdk.h
+@@ -25,6 +25,7 @@ struct dp_packet;
+ 
+ #ifdef DPDK_NETDEV
+ 
++void netdev_dpdk_multi_segment_mbufs_enable(void);
+ void netdev_dpdk_register(void);
+ void free_dpdk_buf(struct dp_packet *);
+ 
+diff --git a/vswitchd/vswitch.xml b/vswitchd/vswitch.xml
+index 6f80958..c9398be 100644
+--- a/vswitchd/vswitch.xml
++++ b/vswitchd/vswitch.xml
+@@ -356,6 +356,28 @@
+         </p>
+       </column>
+ 
++      <column name="other_config" key="dpdk-multi-seg-mbufs"
++              type='{"type": "boolean"}'>
++        <p>
++          Specifies if DPDK uses multi-segment mbufs for handling jumbo frames.
++        </p>
++        <p>
++          If true, DPDK allocates a single mempool per port, irrespective of
++          the ports' requested MTU sizes. The elements of this mempool are
++          'standard'-sized mbufs (typically 2k MB), which may be chained
++          together to accommodate jumbo frames. In this approach, each mbuf
++          typically stores a fragment of the overall jumbo frame.
++        </p>
++        <p>
++          If not specified, defaults to <code>false</code>, in which case, the
++          size of each mbuf within a DPDK port's mempool will be grown to
++          accommodate jumbo frames within a single mbuf.
++        </p>
++        <p>
++          Changing this value requires restarting the daemon.
++        </p>
++      </column>
++
+       <column name="other_config" key="vhost-sock-dir"
+               type='{"type": "string"}'>
+         <p>
+
+From patchwork Sat Jan 12 20:37:55 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023984
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX4X5Y49z9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:53:00 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id A56D1243C;
+ Sat, 12 Jan 2019 20:48:45 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 8B3BD23F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:33 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id C6DE8710
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:31 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:31 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394932"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:28 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:55 +0000
+Message-Id: <1547325477-207468-10-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 09/11] dpdk-tests: Add unit-tests for
+ multi-seg mbufs.
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+In order to create a minimal environment that allows the tests to get
+mbufs from an existing mempool, the following approach is taken:
+- EAL is initialised (by using the main dpdk_init()) and a (very) small
+  mempool is instantiated (mimicking the logic in dpdk_mp_create()).
+  This mempool instance is global and used by all the tests;
+- Packets are then allocated from the instantiated mempool, and tested
+  on, by running some operations on them and manipulating data.
+
+The tests introduced focus on testing DPDK dp_packets (where
+source=DPBUF_DPDK), linked with a single or multiple mbufs, across
+several operations, such as:
+- dp_packet_put();
+- dp_packet_shift();
+- dp_packet_reserve();
+- dp_packet_push_uninit();
+- dp_packet_clear();
+- dp_packet_equal();
+- dp_packet_linear_data();
+- And as a consequence of some of these, dp_packet_put_uninit() and
+  dp_packet_resize__().
+
+Finally, this has also been integrated with the new DPDK testsuite.
+Thus, when running `$sudo make check-dpdk` one will also be running
+these tests.
+
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+Acked-by: Flavio Leitner <fbl@sysclose.org>
+---
+ tests/automake.mk              |  10 +-
+ tests/dpdk-packet-mbufs.at     |   7 +
+ tests/system-dpdk-testsuite.at |   1 +
+ tests/test-dpdk-mbufs.c        | 722 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 739 insertions(+), 1 deletion(-)
+ create mode 100644 tests/dpdk-packet-mbufs.at
+ create mode 100644 tests/test-dpdk-mbufs.c
+
+diff --git a/tests/automake.mk b/tests/automake.mk
+index 92d56b2..6e6237c 100644
+--- a/tests/automake.mk
++++ b/tests/automake.mk
+@@ -168,7 +168,8 @@ SYSTEM_DPDK_TESTSUITE_AT = \
+ 	tests/system-common-macros.at \
+ 	tests/system-dpdk-macros.at \
+ 	tests/system-dpdk-testsuite.at \
+-	tests/system-dpdk.at
++	tests/system-dpdk.at \
++	tests/dpdk-packet-mbufs.at
+ 
+ check_SCRIPTS += tests/atlocal
+ 
+@@ -423,6 +424,10 @@ tests_ovstest_SOURCES = \
+ 	tests/test-vconn.c \
+ 	tests/test-aa.c \
+ 	tests/test-stopwatch.c
++if DPDK_NETDEV
++tests_ovstest_SOURCES += \
++	tests/test-dpdk-mbufs.c
++endif
+ 
+ if !WIN32
+ tests_ovstest_SOURCES += \
+@@ -435,6 +440,9 @@ tests_ovstest_SOURCES += \
+ endif
+ 
+ tests_ovstest_LDADD = lib/libopenvswitch.la ovn/lib/libovn.la
++if DPDK_NETDEV
++tests_ovstest_LDFLAGS = $(AM_LDFLAGS) $(DPDK_vswitchd_LDFLAGS)
++endif
+ 
+ noinst_PROGRAMS += tests/test-stream
+ tests_test_stream_SOURCES = tests/test-stream.c
+diff --git a/tests/dpdk-packet-mbufs.at b/tests/dpdk-packet-mbufs.at
+new file mode 100644
+index 0000000..f28e4fc
+--- /dev/null
++++ b/tests/dpdk-packet-mbufs.at
+@@ -0,0 +1,7 @@
++AT_BANNER([OVS-DPDK dp_packet unit tests])
++
++AT_SETUP([OVS-DPDK dp_packet - mbufs allocation])
++AT_KEYWORDS([dp_packet, multi-seg, mbufs])
++AT_CHECK(ovstest test-dpdk-packet, [], [ignore], [ignore])
++
++AT_CLEANUP
+diff --git a/tests/system-dpdk-testsuite.at b/tests/system-dpdk-testsuite.at
+index 382f09e..f5edf58 100644
+--- a/tests/system-dpdk-testsuite.at
++++ b/tests/system-dpdk-testsuite.at
+@@ -23,3 +23,4 @@ m4_include([tests/system-common-macros.at])
+ m4_include([tests/system-dpdk-macros.at])
+ 
+ m4_include([tests/system-dpdk.at])
++m4_include([tests/dpdk-packet-mbufs.at])
+diff --git a/tests/test-dpdk-mbufs.c b/tests/test-dpdk-mbufs.c
+new file mode 100644
+index 0000000..0c152bf
+--- /dev/null
++++ b/tests/test-dpdk-mbufs.c
+@@ -0,0 +1,722 @@
++/*
++ * Copyright (c) 2018 Intel Corporation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at:
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <config.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <rte_config.h>
++#include <rte_mbuf.h>
++#include <rte_mempool.h>
++#include <rte_errno.h>
++#include "dp-packet.h"
++#include "ovstest.h"
++#include "dpdk.h"
++#include "smap.h"
++#include "csum.h"
++#include "crc32c.h"
++
++#define N_MBUFS 1024
++#define MBUF_DATA_LEN 2048
++
++static int num_tests = 0;
++
++/* Global var to hold a mempool instance, "test-mp", used in all of the tests
++ * below. This instance is instantiated in dpdk_setup_eal_with_mp(). */
++static struct rte_mempool *mp;
++
++/* Test data used to fill the packets with data. Note that this isn't a string
++ * that repsents a valid packet, by any means. The pattern is generated in set_
++ * testing_pattern_str() and the sole purpose is to verify the data remains the
++ * same after inserting and operating on multi-segment mbufs. */
++static char *test_str;
++
++/* Asserts a dp_packet that holds a single mbuf, where:
++ * - nb_segs must be 1;
++ * - pkt_len must be equal to data_len which in turn must equal the provided
++ *   'pkt_len';
++ * - data_off must start at the provided 'data_ofs';
++ * - next must be NULL. */
++static void
++assert_single_mbuf(struct dp_packet *pkt, uint16_t data_ofs,
++                   uint32_t pkt_len) {
++    struct rte_mbuf *mbuf = CONST_CAST(struct rte_mbuf *, &pkt->mbuf);
++    ovs_assert(mbuf->nb_segs == 1);
++    ovs_assert(mbuf->data_off == data_ofs);
++    ovs_assert(mbuf->pkt_len == mbuf->data_len);
++    ovs_assert(mbuf->pkt_len == pkt_len);
++    ovs_assert(mbuf->next == NULL);
++}
++
++/* Asserts a dp_packet that holds multiple mbufs, where:
++ * - nb_segs must be > 1 and equal to the provided 'nb_segs';
++ * - data_off must start at the provided 'data_ofs';
++ * - pkt_len must be equal to the provided 'pkt_len' and the some of each
++ *   mbufs' 'data_len' must equal the pky_len;
++ * - next must not be NULL. */
++static void
++assert_multiple_mbufs(struct dp_packet *pkt, uint16_t data_ofs,
++                      uint32_t pkt_len, uint16_t nb_segs) {
++    struct rte_mbuf *mbuf = CONST_CAST(struct rte_mbuf *, &pkt->mbuf);
++    ovs_assert(mbuf->nb_segs > 1 && mbuf->nb_segs == nb_segs);
++    ovs_assert(mbuf->data_off == data_ofs);
++    ovs_assert(mbuf->pkt_len != mbuf->data_len);
++    ovs_assert(mbuf->next != NULL);
++    ovs_assert(mbuf->pkt_len == pkt_len);
++    /* Make sure pkt_len equals the sum of all segments data_len */
++    while (mbuf) {
++        pkt_len -= rte_pktmbuf_data_len(mbuf);
++        mbuf = mbuf->next;
++    }
++    ovs_assert(pkt_len == 0);
++}
++
++/* Asserts that the data existing in a packet, starting at 'data_ofs' of the
++ * first mbuf and of length 'data_len' matches the global test_str used,
++ * starting at index 0 and of the same length. */
++static void
++assert_data(struct dp_packet *pkt, uint16_t data_ofs, uint16_t data_len) {
++    struct rte_mbuf *mbuf = CONST_CAST(struct rte_mbuf *, &pkt->mbuf);
++
++    char *data = xmalloc(sizeof(*data) * data_len);
++    const char *rd = rte_pktmbuf_read(mbuf, data_ofs, data_len, data);
++
++    ovs_assert(rd != NULL);
++    ovs_assert(memcmp(rd, test_str, data_len) == 0);
++
++    free(data);
++}
++
++static void
++set_testing_pattern_str(void) {
++    static const char *pattern = "1234567890";
++
++    /* Pattern will be of size 5000B */
++    size_t test_str_len = 5000;
++    test_str = xmalloc(test_str_len * sizeof(*test_str) + 1);
++
++    for (int i = 0; i < test_str_len; i += strlen(pattern)) {
++        memcpy(test_str + i, pattern, strlen(pattern));
++    }
++
++    test_str[test_str_len] = 0;
++}
++
++static void
++dpdk_eal_init(void) {
++    struct smap other_config;
++    smap_init(&other_config);
++
++    printf("Initialising EAL...\n");
++    smap_add(&other_config, "dpdk-init", "true");
++    smap_add(&other_config, "dpdk-lcore-mask", "10");
++    smap_add(&other_config, "dpdk-socket-mem", "2048,0");
++    smap_add(&other_config, "dpdk-multi-seg-mbufs", "true");
++
++    dpdk_init(&other_config);
++}
++
++/* The allocation of mbufs here mimics the logic in dpdk_mp_create in
++ * netdev-dpdk.c. */
++static struct rte_mempool *
++dpdk_mp_create(char *mp_name) {
++    uint16_t mbuf_size, aligned_mbuf_size, mbuf_priv_data_len;
++
++    mbuf_size = sizeof (struct dp_packet) +
++                            MBUF_DATA_LEN + RTE_PKTMBUF_HEADROOM;
++    aligned_mbuf_size = ROUND_UP(mbuf_size, RTE_CACHE_LINE_SIZE);
++    mbuf_priv_data_len = sizeof(struct dp_packet) - sizeof(struct rte_mbuf) +
++                         (aligned_mbuf_size - mbuf_size);
++
++    struct rte_mempool *mpool = rte_pktmbuf_pool_create(
++                                    mp_name, N_MBUFS,
++                                    RTE_MEMPOOL_CACHE_MAX_SIZE,
++                                    mbuf_priv_data_len,
++                                    MBUF_DATA_LEN +
++                                    RTE_PKTMBUF_HEADROOM /* defaults 128B */,
++                                    SOCKET_ID_ANY);
++    if (mpool) {
++        printf("Allocated \"%s\" mempool with %u mbufs\n", mp_name, N_MBUFS);
++    } else {
++        printf("Failed mempool \"%s\" create request of %u mbufs: %s.\n",
++               mp_name, N_MBUFS, rte_strerror(rte_errno));
++
++        ovs_assert(mpool != NULL);
++    }
++
++    return mpool;
++}
++
++static void
++dpdk_setup_eal_with_mp(void) {
++    dpdk_eal_init();
++
++    mp = dpdk_mp_create("test-mp");
++    ovs_assert(mp != NULL);
++}
++
++static struct dp_packet *
++dpdk_mp_alloc_pkt(struct rte_mempool *mpool) {
++    struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mpool);
++
++    struct dp_packet *pkt = (struct dp_packet *) mbuf;
++    pkt->source = DPBUF_DPDK;
++
++    return pkt;
++}
++
++/* Similar to dp_packet_put() in dp-packet.c, appends the 'size' bytes of data
++ * in 'p' to the tail end of 'pkt', allocating new mbufs if needed. */
++static struct dp_packet *
++dpdk_pkt_put(struct dp_packet *pkt, void *p, size_t size) {
++    uint16_t max_data_len, nb_segs;
++    struct rte_mbuf *mbuf, *fmbuf;
++
++    mbuf = CONST_CAST(struct rte_mbuf *, &pkt->mbuf);
++
++    /* All new allocated mbuf's max data len is the same */
++    max_data_len = mbuf->buf_len - mbuf->data_off;
++
++    /* Calculate # of needed mbufs to accomodate 'miss_len' */
++    nb_segs = size / max_data_len;
++    if (size % max_data_len) {
++        nb_segs += 1;
++    }
++
++    /* Proceed with the allocation of new mbufs */
++    mp = mbuf->pool;
++    fmbuf = mbuf;
++    mbuf = rte_pktmbuf_lastseg(mbuf);
++
++    for (int i = 0; i < nb_segs; i++) {
++        /* This takes care of initialising buf_len, data_len and other
++         * fields properly */
++        mbuf->next = rte_pktmbuf_alloc(mp);
++        if (!mbuf->next) {
++            printf("Problem allocating more mbufs for tests.\n");
++            rte_pktmbuf_free(mbuf);
++            fmbuf = NULL;
++            return NULL;
++        }
++
++        fmbuf->nb_segs += 1;
++
++        mbuf = mbuf->next;
++    }
++
++    dp_packet_mbuf_write(fmbuf, 0, size, p);
++
++    dp_packet_set_size(pkt, size);
++
++    return pkt;
++}
++
++static int
++test_dpdk_packet_insert_headroom(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Reserve 256B of header */
++    size_t str_len = 512;
++    dp_packet_reserve(pkt, str_len);
++    char *p = dp_packet_push_uninit(pkt, str_len);
++    ovs_assert(p != NULL);
++    /* Put the first 512B of "test_str" in the allocated header */
++    memcpy(p, test_str, str_len);
++
++    /* Check properties and data are as expected */
++    assert_single_mbuf(pkt, RTE_PKTMBUF_HEADROOM, str_len);
++    assert_data(pkt, 0, str_len);
++
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_insert_tailroom_and_headroom(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Reserve 256B of header */
++    size_t head_len = 256;
++    dp_packet_reserve(pkt, head_len);
++
++    /* Put the first 512B of "test_str" in the packet's header */
++    size_t str_len = 512;
++    char *p = dp_packet_put(pkt, test_str, str_len);
++    ovs_assert(p != NULL);
++
++    /* Fill the reserved 256B of header */
++    p = dp_packet_push_uninit(pkt, head_len);
++    ovs_assert(p != NULL);
++
++    /* Check properties and data are as expected */
++    assert_single_mbuf(pkt, RTE_PKTMBUF_HEADROOM, str_len + head_len);
++
++    /* Check the data inserted in the packet is correct */
++    char *data = xmalloc(sizeof(*data) * (str_len + head_len));
++    const char *rd = rte_pktmbuf_read(&pkt->mbuf, 0, str_len + head_len, data);
++    ovs_assert(rd != NULL);
++    /* Because of the headroom inserted, the data now begin at offset 256 */
++    ovs_assert(memcmp(rd + head_len, test_str, str_len) == 0);
++
++    dp_packet_uninit(pkt);
++    free(data);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_insert_tailroom_and_headroom_multiple_mbufs(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the first 2050B of "test_str" in the packet, just enought to
++     * allocate two mbufs */
++    size_t str_len = MBUF_DATA_LEN + 2;
++    pkt = dpdk_pkt_put(pkt, test_str, str_len);
++    ovs_assert(pkt != NULL);
++
++    /* Put the first 512B of "test_str" in the packet's header */
++    size_t tail_len = 512;
++    char *p = dp_packet_put(pkt, test_str, tail_len);
++    ovs_assert(p != NULL);
++
++    /* Fill the entire headroom */
++    size_t head_len = RTE_PKTMBUF_HEADROOM;
++    p = dp_packet_push_uninit(pkt, head_len);
++    ovs_assert(p != NULL);
++    /* Copy the data to the reserved headroom */
++    memcpy(p, test_str, head_len);
++
++    /* Check properties and data are as expected */
++    size_t pkt_len = head_len + str_len + tail_len;
++    uint16_t nb_segs = 2;
++    assert_multiple_mbufs(pkt, 0, pkt_len, nb_segs);
++
++    /* Check the data inserted in the packet is correct */
++    char *data = xmalloc(sizeof(*data) * pkt_len);
++    const char *rd = rte_pktmbuf_read(&pkt->mbuf, 0, pkt_len, data);
++    ovs_assert(rd != NULL);
++    ovs_assert(memcmp(rd, test_str, head_len) == 0);
++    ovs_assert(memcmp(rd + head_len + str_len, test_str, tail_len) == 0);
++
++    dp_packet_uninit(pkt);
++    free(data);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_insert_tailroom_multiple_mbufs(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the first 2050B of "test_str" in the packet, just enought to
++     * allocate two mbufs */
++    size_t str_len = MBUF_DATA_LEN + 2;
++    pkt = dpdk_pkt_put(pkt, test_str, str_len);
++    ovs_assert(pkt != NULL);
++
++    /* Put the first 2000B of "test_str" in the packet's end */
++    size_t tail_len = 2000;
++    char *p = dp_packet_put(pkt, test_str, tail_len);
++    ovs_assert(p != NULL);
++
++    /* Check properties and data are as expected */
++    char *data = xmalloc(sizeof(*data) * (str_len + tail_len));
++    const char *rd = rte_pktmbuf_read(&pkt->mbuf, 0, str_len + tail_len, data);
++    ovs_assert(rd != NULL);
++    /* Because of the headroom inserted, the data now begin at offset 256 */
++    ovs_assert(memcmp(rd + str_len, test_str, tail_len) == 0);
++
++    dp_packet_uninit(pkt);
++    free(data);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_insert_headroom_multiple_mbufs(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the first 2050B of "test_str" in the packet, just enought to
++     * allocate two mbufs */
++    size_t str_len = MBUF_DATA_LEN + 2;
++    pkt = dpdk_pkt_put(pkt, test_str, str_len);
++
++    /* Fill the entire headroom */
++    size_t head_len = RTE_PKTMBUF_HEADROOM;
++    char *p = dp_packet_push_uninit(pkt, head_len);
++    ovs_assert(p != NULL);
++
++    /* Check properties and data are as expected */
++    char *data = xmalloc(sizeof(*data) * (str_len + head_len));
++    const char *rd = rte_pktmbuf_read(&pkt->mbuf, 0, str_len + head_len, data);
++    ovs_assert(rd != NULL);
++    /* Because of the headroom inserted, the data is at offset 'head_len' */
++    ovs_assert(memcmp(rd + head_len, test_str, str_len) == 0);
++
++    dp_packet_uninit(pkt);
++    free(data);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_change_size(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put enough data in the packet that spans three mbufs (5120B) */
++    size_t str_len = MBUF_DATA_LEN * 2 + 1024;
++    pkt = dpdk_pkt_put(pkt, test_str, str_len);
++    ovs_assert(pkt != NULL);
++
++    /* Check properties and data are as expected */
++    uint16_t nb_segs = 3;
++    assert_multiple_mbufs(pkt, RTE_PKTMBUF_HEADROOM, str_len, nb_segs);
++
++    /* Change the size of the packet to fit in a single mbuf */
++    dp_packet_clear(pkt);
++
++    assert_single_mbuf(pkt, RTE_PKTMBUF_HEADROOM, 0);
++
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++/* Shift() tests */
++
++static int
++test_dpdk_packet_shift_single_mbuf(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the first 1024B of "test_str" in the packet */
++    size_t str_len = 1024;
++    char *p = dp_packet_put(pkt, test_str, str_len);
++    ovs_assert(p != NULL);
++
++    /* Shift data right by 512B */
++    uint16_t shift_len = 512;
++    dp_packet_shift(pkt, shift_len);
++
++    /* Check properties and data are as expected */
++    assert_single_mbuf(pkt, RTE_PKTMBUF_HEADROOM + shift_len, str_len);
++    assert_data(pkt, 0, str_len);
++
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_shift_multiple_mbufs(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the data in "test_str" in the packet */
++    size_t str_len = strlen(test_str);
++    pkt = dpdk_pkt_put(pkt, test_str, str_len);
++    ovs_assert(pkt != NULL);
++
++    /* Check properties and data are as expected */
++    uint16_t nb_segs = 3;
++    assert_multiple_mbufs(pkt, RTE_PKTMBUF_HEADROOM, str_len, nb_segs);
++
++    /* Shift data right by 1024B */
++    uint16_t shift_len = 1024;
++    dp_packet_shift(pkt, shift_len);
++
++    /* Check the data has been inserted correctly */
++    assert_multiple_mbufs(pkt, RTE_PKTMBUF_HEADROOM + shift_len, str_len,
++                          nb_segs);
++    assert_data(pkt, 0, str_len);
++
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_shift_right_then_left(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the first 1024B of "test_str" in the packet */
++    size_t str_len = strlen(test_str);
++    pkt = dpdk_pkt_put(pkt, test_str, str_len);
++    ovs_assert(pkt != NULL);
++
++    /* Shift data right by 1024B */
++    int16_t shift_len = 1024;
++    dp_packet_shift(pkt, 1024);
++
++    /* Check properties and data are as expected */
++    uint16_t nb_segs = 3;
++    assert_multiple_mbufs(pkt, RTE_PKTMBUF_HEADROOM + shift_len, str_len,
++                          nb_segs);
++
++    /* Shift data left by 512B */
++    dp_packet_shift(pkt, -shift_len);
++
++    /* We negative shift_len (-shift_len) since  */
++    assert_multiple_mbufs(pkt, RTE_PKTMBUF_HEADROOM, str_len,
++                          nb_segs);
++    assert_data(pkt, 0, str_len);
++
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_equal_multiple_mbufs(void) {
++    /* Allocate first packet for comparison */
++    struct dp_packet *pkt1 = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt1 != NULL);
++
++    /* Put the data in "test_str" in the packet */
++    size_t str_len = strlen(test_str);
++    pkt1 = dpdk_pkt_put(pkt1, test_str, str_len);
++    ovs_assert(pkt1 != NULL);
++
++    /* Check properties and data are as expected */
++    uint16_t nb_segs = 3;
++    assert_multiple_mbufs(pkt1, RTE_PKTMBUF_HEADROOM, str_len, nb_segs);
++
++    /* Allocate second packet for comparison */
++    struct dp_packet *pkt2 = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt2 != NULL);
++
++    /* Put the data in "test_str" in the packet */
++    pkt2 = dpdk_pkt_put(pkt2, test_str, str_len);
++    ovs_assert(pkt2 != NULL);
++
++    /* Check properties and data are as expected */
++    assert_multiple_mbufs(pkt2, RTE_PKTMBUF_HEADROOM, str_len, nb_segs);
++
++    ovs_assert(dp_packet_equal(pkt1, pkt2));
++
++    dp_packet_uninit(pkt1);
++    dp_packet_uninit(pkt2);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_single_mbuf_to_linear_malloc(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the first 1024B of "test_str" in the packet */
++    size_t str_len = 1024;
++    char *p = dp_packet_put(pkt, test_str, str_len);
++    ovs_assert(p != NULL);
++
++    char *paddr = rte_pktmbuf_mtod(&pkt->mbuf, char *);
++    /* Convert DPBUF_DPDK packet in a linear DPBUF_MALLOC packet */
++    if (!dp_packet_is_linear(pkt)) {
++        dp_packet_linearize(pkt);
++    }
++
++    char *d = dp_packet_data(pkt);
++
++    /* Check properties and data are as expected, namely:
++     * - The packet is still a DPBUF_DPDK packet;
++     * - The returned address is still an address in the mbuf;
++     * - Single mbuf properties still hold. */
++    ovs_assert(d != NULL);
++    ovs_assert(pkt->source == DPBUF_DPDK);
++    ovs_assert(d == paddr);
++    assert_single_mbuf(pkt, RTE_PKTMBUF_HEADROOM, str_len);
++
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_multiple_mbufs_to_linear_malloc(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the data in "test_str" in the packet */
++    size_t str_len = strlen(test_str);
++    pkt = dpdk_pkt_put(pkt, test_str, str_len);
++    ovs_assert(pkt != NULL);
++
++    /* Check properties and data are as expected */
++    uint16_t nb_segs = 3;
++    assert_multiple_mbufs(pkt, RTE_PKTMBUF_HEADROOM, str_len, nb_segs);
++
++    char *paddr = rte_pktmbuf_mtod(&pkt->mbuf, char *);
++    /* Convert DPBUF_DPDK packet in a linear DPBUF_MALLOC packet */
++    if (!dp_packet_is_linear(pkt)) {
++        dp_packet_linearize(pkt);
++    }
++
++    char *d = dp_packet_data(pkt);
++
++    /* Check properties and data are as expected, namely:
++     * - The packet is now a DPBUF_MALLOC packet;
++     * - The returned address is a new address;
++     * - All expected data is now in the new address. */
++    ovs_assert(d != NULL);
++    ovs_assert(pkt->source == DPBUF_MALLOC);
++    ovs_assert(d != paddr);
++    ovs_assert(memcmp(d, test_str, str_len) == 0);
++
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_single_mbuf_csum(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the first 1023B of "test_str" in the packet. Note that 1023B is an
++     * odd number to cover for this case for the csum */
++    size_t str_len = 1023;
++    char *p = dp_packet_put(pkt, test_str, str_len);
++    ovs_assert(p != NULL);
++
++    /* Calculate the checksum on the whole packet's data */
++    uint32_t pkt_csum = packet_csum(pkt, 0, dp_packet_size(pkt));
++
++    uint32_t data_csum = csum(dp_packet_data(pkt), dp_packet_size(pkt));
++
++    /* Check the checksums are the same */
++    ovs_assert(pkt_csum == data_csum);
++    assert_single_mbuf(pkt, RTE_PKTMBUF_HEADROOM, str_len);
++
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_multiple_mbufs_csum(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the data in "test_str" in the packet */
++    size_t str_len = strlen(test_str);
++    pkt = dpdk_pkt_put(pkt, test_str, str_len);
++    ovs_assert(pkt != NULL);
++
++    /* Check properties and data are as expected */
++    uint16_t nb_segs = 3;
++    assert_multiple_mbufs(pkt, RTE_PKTMBUF_HEADROOM, str_len, nb_segs);
++
++    /* Calculate the checksum on the whole packet's data */
++    uint32_t pkt_csum = packet_csum(pkt, 0, dp_packet_size(pkt));
++
++    char *data = xmalloc(dp_packet_size(pkt));
++    rte_pktmbuf_read(&pkt->mbuf, 0, dp_packet_size(pkt), data);
++    uint32_t data_csum = csum(data, dp_packet_size(pkt));
++
++    /* Check the checksums are the same */
++    ovs_assert(pkt_csum == data_csum);
++    ovs_assert(memcmp(data, test_str, str_len) == 0);
++
++    free(data);
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet_multiple_mbufs_crc32c(void) {
++    struct dp_packet *pkt = dpdk_mp_alloc_pkt(mp);
++    ovs_assert(pkt != NULL);
++
++    /* Put the data in "test_str" in the packet */
++    size_t str_len = strlen(test_str);
++    pkt = dpdk_pkt_put(pkt, test_str, str_len);
++    ovs_assert(pkt != NULL);
++
++    /* Check properties and data are as expected */
++    uint16_t nb_segs = 3;
++    assert_multiple_mbufs(pkt, RTE_PKTMBUF_HEADROOM, str_len, nb_segs);
++
++    /* Calculate the crc32 on the whole packet's data */
++    uint32_t pkt_crc32 = packet_crc32c(pkt, 0, dp_packet_size(pkt));
++
++    char *data = xmalloc(dp_packet_size(pkt));
++    rte_pktmbuf_read(&pkt->mbuf, 0, dp_packet_size(pkt), data);
++    uint32_t data_crc32 = crc32c((uint8_t *) data, dp_packet_size(pkt));
++
++    /* Check the crc32 results are the same */
++    ovs_assert(pkt_crc32 == data_crc32);
++    ovs_assert(memcmp(data, test_str, str_len) == 0);
++
++    free(data);
++    dp_packet_uninit(pkt);
++
++    return 0;
++}
++
++static int
++test_dpdk_packet(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
++{
++    /* Setup environment for tests */
++    dpdk_setup_eal_with_mp();
++    set_testing_pattern_str();
++
++    test_dpdk_packet_insert_headroom();
++    num_tests++;
++    test_dpdk_packet_insert_tailroom_and_headroom();
++    num_tests++;
++    test_dpdk_packet_insert_tailroom_multiple_mbufs();
++    num_tests++;
++    test_dpdk_packet_insert_headroom_multiple_mbufs();
++    num_tests++;
++    test_dpdk_packet_insert_tailroom_and_headroom_multiple_mbufs();
++    num_tests++;
++    test_dpdk_packet_change_size();
++    num_tests++;
++    test_dpdk_packet_shift_single_mbuf();
++    num_tests++;
++    test_dpdk_packet_shift_multiple_mbufs();
++    num_tests++;
++    test_dpdk_packet_shift_right_then_left();
++    num_tests++;
++    test_dpdk_packet_equal_multiple_mbufs();
++    num_tests++;
++    test_dpdk_packet_single_mbuf_to_linear_malloc();
++    num_tests++;
++    test_dpdk_packet_multiple_mbufs_to_linear_malloc();
++    num_tests++;
++    test_dpdk_packet_single_mbuf_csum();
++    num_tests++;
++    test_dpdk_packet_multiple_mbufs_csum();
++    num_tests++;
++    test_dpdk_packet_multiple_mbufs_crc32c();
++    num_tests++;
++
++    printf("Executed %d tests\n", num_tests);
++
++    exit(0);
++}
++
++OVSTEST_REGISTER("test-dpdk-packet", test_dpdk_packet);
+
+From patchwork Sat Jan 12 20:37:56 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023985
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX511Yy4z9s4s
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:53:25 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id 56ECE2440;
+ Sat, 12 Jan 2019 20:48:46 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 9FA9623F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:34 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id 4526B806
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:34 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:34 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394942"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:31 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:56 +0000
+Message-Id: <1547325477-207468-11-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 10/11] dpdk-tests: Accept other configs in
+ OVS_DPDK_START
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+As it stands, OVS_DPDK_START() won't allow other configs to be set
+before starting the ovs-vswitchd daemon. This is a problem since some
+configs, such as the "dpdk-multi-seg-mbufs=true" for enabling the
+multi-segment mbufs, need to be set prior to start OvS.
+
+To support other options, OVS_DPDK_START() has been modified to accept
+extra configs in the form "$config_name=$config_value". It then uses
+ovs-vsctl to set the configs.
+
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+Acked-by: Flavio Leitner <fbl@sysclose.org>
+---
+ tests/system-dpdk-macros.at | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/tests/system-dpdk-macros.at b/tests/system-dpdk-macros.at
+index f772a19..63d17c1 100644
+--- a/tests/system-dpdk-macros.at
++++ b/tests/system-dpdk-macros.at
+@@ -33,7 +33,7 @@ m4_define([OVS_DPDK_PRE_PHY_SKIP],
+ ])
+ 
+ 
+-# OVS_DPDK_START()
++# OVS_DPDK_START([other-conf-args])
+ #
+ # Create an empty database and start ovsdb-server. Add special configuration
+ # dpdk-init to enable DPDK functionality. Start ovs-vswitchd connected to that
+@@ -60,6 +60,10 @@ m4_define([OVS_DPDK_START],
+    AT_CHECK([lscpu], [], [stdout])
+    AT_CHECK([cat stdout | grep "NUMA node(s)" | awk '{c=1; while (c++<$(3)) {printf "1024,"}; print "1024"}' > SOCKET_MEM])
+    AT_CHECK([ovs-vsctl --no-wait set Open_vSwitch . other_config:dpdk-socket-mem="$(cat SOCKET_MEM)"])
++   dnl Iterate through $other-conf-args list and include them
++   m4_foreach_w(opt, $1, [
++       AT_CHECK([ovs-vsctl --no-wait set Open_vSwitch . other_config:opt])
++   ])
+ 
+    dnl Start ovs-vswitchd.
+    AT_CHECK([ovs-vswitchd --detach --no-chdir --pidfile --log-file -vvconn -vofproto_dpif -vunixctl], [0], [stdout], [stderr])
+
+From patchwork Sat Jan 12 20:37:57 2019
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: "Lam, Tiago" <tiago.lam@intel.com>
+X-Patchwork-Id: 1023986
+X-Patchwork-Delegate: ian.stokes@intel.com
+Return-Path: <ovs-dev-bounces@openvswitch.org>
+X-Original-To: incoming@patchwork.ozlabs.org
+Delivered-To: patchwork-incoming@bilbo.ozlabs.org
+Authentication-Results: ozlabs.org;
+ spf=pass (mailfrom) smtp.mailfrom=openvswitch.org
+ (client-ip=140.211.169.12; helo=mail.linuxfoundation.org;
+ envelope-from=ovs-dev-bounces@openvswitch.org;
+ receiver=<UNKNOWN>)
+Authentication-Results: ozlabs.org;
+ dmarc=fail (p=none dis=none) header.from=intel.com
+Received: from mail.linuxfoundation.org (mail.linuxfoundation.org
+ [140.211.169.12])
+ (using TLSv1.2 with cipher ECDHE-RSA-AES256-GCM-SHA384 (256/256
+ bits)) (No client certificate requested)
+ by ozlabs.org (Postfix) with ESMTPS id 43cX5S4Dxdz9s3q
+ for <incoming@patchwork.ozlabs.org>;
+ Sun, 13 Jan 2019 07:53:48 +1100 (AEDT)
+Received: from mail.linux-foundation.org (localhost [127.0.0.1])
+ by mail.linuxfoundation.org (Postfix) with ESMTP id 13E6D2444;
+ Sat, 12 Jan 2019 20:48:47 +0000 (UTC)
+X-Original-To: ovs-dev@openvswitch.org
+Delivered-To: ovs-dev@mail.linuxfoundation.org
+Received: from smtp1.linuxfoundation.org (smtp1.linux-foundation.org
+ [172.17.192.35])
+ by mail.linuxfoundation.org (Postfix) with ESMTPS id 6139123F8
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:37 +0000 (UTC)
+X-Greylist: domain auto-whitelisted by SQLgrey-1.7.6
+Received: from mga06.intel.com (mga06.intel.com [134.134.136.31])
+ by smtp1.linuxfoundation.org (Postfix) with ESMTPS id CA362806
+ for <ovs-dev@openvswitch.org>; Sat, 12 Jan 2019 20:38:36 +0000 (UTC)
+X-Amp-Result: SKIPPED(no attachment in message)
+X-Amp-File-Uploaded: False
+Received: from orsmga008.jf.intel.com ([10.7.209.65])
+ by orsmga104.jf.intel.com with ESMTP/TLS/DHE-RSA-AES256-GCM-SHA384;
+ 12 Jan 2019 12:38:36 -0800
+X-ExtLoop1: 1
+X-IronPort-AV: E=Sophos;i="5.56,470,1539673200"; d="scan'208";a="109394949"
+Received: from silpixa00399125.ir.intel.com ([10.237.223.34])
+ by orsmga008.jf.intel.com with ESMTP; 12 Jan 2019 12:38:34 -0800
+From: Tiago Lam <tiago.lam@intel.com>
+To: ovs-dev@openvswitch.org
+Date: Sat, 12 Jan 2019 20:37:57 +0000
+Message-Id: <1547325477-207468-12-git-send-email-tiago.lam@intel.com>
+X-Mailer: git-send-email 2.7.4
+In-Reply-To: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+References: <1547325477-207468-1-git-send-email-tiago.lam@intel.com>
+X-Spam-Status: No, score=-4.2 required=5.0 tests=BAYES_00, RCVD_IN_DNSWL_MED
+ autolearn=ham version=3.3.1
+X-Spam-Checker-Version: SpamAssassin 3.3.1 (2010-03-16) on
+ smtp1.linux-foundation.org
+Cc: fbl@sysclose.org, i.maximets@samsung.com
+Subject: [ovs-dev] [PATCH v14 11/11] dpdk-tests: End-to-end tests for
+ multi-seg mbufs.
+X-BeenThere: ovs-dev@openvswitch.org
+X-Mailman-Version: 2.1.12
+Precedence: list
+List-Id: <ovs-dev.openvswitch.org>
+List-Unsubscribe: <https://mail.openvswitch.org/mailman/options/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=unsubscribe>
+List-Archive: <http://mail.openvswitch.org/pipermail/ovs-dev/>
+List-Post: <mailto:ovs-dev@openvswitch.org>
+List-Help: <mailto:ovs-dev-request@openvswitch.org?subject=help>
+List-Subscribe: <https://mail.openvswitch.org/mailman/listinfo/ovs-dev>,
+ <mailto:ovs-dev-request@openvswitch.org?subject=subscribe>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="us-ascii"
+Sender: ovs-dev-bounces@openvswitch.org
+Errors-To: ovs-dev-bounces@openvswitch.org
+
+The following tests are added to the DPDK testsuite to add some
+coverage for the multi-segment mbufs:
+- Check that multi-segment mbufs are disabled by default;
+- Check that providing `other_config:dpdk-multi-seg-mbufs=true` indeed
+  enables mbufs;
+- Using a DPDK port, send a random packet out and check that `ofctl
+  dump-flows` shows the correct amount of packets and bytes sent.
+
+Signed-off-by: Tiago Lam <tiago.lam@intel.com>
+Acked-by: Eelco Chaudron <echaudro@redhat.com>
+---
+ tests/system-dpdk.at | 65 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 65 insertions(+)
+
+diff --git a/tests/system-dpdk.at b/tests/system-dpdk.at
+index 1da020a..ca66135 100644
+--- a/tests/system-dpdk.at
++++ b/tests/system-dpdk.at
+@@ -232,3 +232,68 @@ OVS_VSWITCHD_STOP(["\@does not exist. The Open vSwitch kernel module is probably
+ \@EAL: No free hugepages reported in hugepages-1048576kB@d"])
+ AT_CLEANUP
+ dnl --------------------------------------------------------------------------
++
++AT_SETUP([Jumbo frames - Multi-segment disabled by default])
++OVS_DPDK_START()
++
++AT_CHECK([grep "multi-segment mbufs enabled" ovs-vswitchd.log], [1], [])
++OVS_VSWITCHD_STOP("/Global register is changed during/d
++/EAL: No free hugepages reported in hugepages-1048576kB/d
++")
++AT_CLEANUP
++
++AT_SETUP([Jumbo frames - Multi-segment enabled])
++OVS_DPDK_START([dpdk-multi-seg-mbufs=true])
++AT_CHECK([grep "multi-segment mbufs enabled" ovs-vswitchd.log], [], [stdout])
++OVS_VSWITCHD_STOP("/Global register is changed during/d
++/EAL: No free hugepages reported in hugepages-1048576kB/d
++")
++AT_CLEANUP
++
++AT_SETUP([Jumbo frames - Multi-segment mbufs Tx])
++OVS_DPDK_PRE_CHECK()
++OVS_DPDK_START([per-port-memory=true dpdk-multi-seg-mbufs=true])
++
++dnl Add userspace bridge and attach it to OVS
++AT_CHECK([ovs-vsctl add-br br10 -- set bridge br10 datapath_type=netdev])
++AT_CHECK([ovs-vsctl add-port br10 dpdk0 \
++    -- set Interface dpdk0 type=dpdk options:dpdk-devargs=$(cat PCI_ADDR) \
++    -- set Interface dpdk0 mtu_request=9000], [], [stdout], [stderr])
++
++AT_CHECK([ovs-vsctl show], [], [stdout])
++
++dnl Add flows to send packets out from the 'dpdk0' port
++AT_CHECK([
++ovs-ofctl del-flows br10
++ovs-ofctl add-flow br10 in_port=LOCAL,actions=output:dpdk0
++], [], [stdout])
++
++AT_CHECK([ovs-ofctl dump-flows br10], [], [stdout])
++
++dnl Send packet out, of the 'dpdk0' port
++AT_CHECK([
++ARP_HEADER="000009000B00000009000A00080600010800060400010000000000010A0000\
++010000000000020A000002"
++dnl Build a random hex string to append to the ARP_HEADER
++RANDOM_BODY=$(printf '0102030405%.0s' {1..1750})
++dnl 8792B ARP packet
++RANDOM_ARP="$ARP_HEADER$RANDOM_BODY"
++
++ovs-ofctl packet-out br10 "packet=$RANDOM_ARP,action=resubmit:LOCAL"
++], [], [stdout])
++
++AT_CHECK([ovs-ofctl dump-flows br10], [0], [stdout])
++
++dnl Confirm the single packet as been sent with correct size
++AT_CHECK([ovs-ofctl dump-flows br10 | ofctl_strip | grep in_port], [0], [dnl
++ n_packets=1, n_bytes=8792, in_port=LOCAL actions=output:1
++])
++
++dnl Clean up
++OVS_VSWITCHD_STOP("/does not exist. The Open vSwitch kernel module is probably not loaded./d
++/Failed to enable flow control/d
++/failed to connect to \/tmp\/dpdkvhostclient0: No such file or directory/d
++/Global register is changed during/d
++/EAL: No free hugepages reported in hugepages-1048576kB/d
++")
++AT_CLEANUP
